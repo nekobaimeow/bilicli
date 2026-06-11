@@ -3,7 +3,7 @@
 
 use bilitools::cli::output::{Output, OutputMode};
 use bilitools::cli::root::{Cli, Command};
-use bilitools::cli::{auth, cache, config as cfg, db as dbcmd, download, info, parse as par, repl, schedule};
+use bilitools::cli::{auth, cache, config as cfg, danmaku, db as dbcmd, download, info, parse as par, repl, schedule, search};
 use bilitools::context;
 use bilitools::doctor;
 use bilitools::error::CliError;
@@ -66,6 +66,8 @@ async fn async_run(cli: Cli) -> Result<(), CliError> {
         Command::Config(c) => cfg::run(c, &out).await,
         Command::Cache(c) => cache::run(c, &out).await,
         Command::Db(c) => dbcmd::run(c, &out).await,
+        Command::Search { .. } => search::run(&cmd, &out).await,
+        Command::Danmaku { .. } => danmaku::run(&cmd, &out).await,
         Command::Doctor => {
             let report = doctor::run().await?;
             out.ok(report)
@@ -75,12 +77,18 @@ async fn async_run(cli: Cli) -> Result<(), CliError> {
 }
 
 async fn cmd_init(out: &Output) -> Result<(), CliError> {
-    use bilitools::ipc::login;
-    login::get_buvid().await?;
-    login::get_bili_ticket().await?;
-    login::get_uuid().await?;
+    // Fingerprint cookies are already loaded by `context::ctx()` at startup
+    // (see `AppContext::build`); this command now exists as a no-op alias
+    // for backwards compatibility and to give the user a way to re-warm
+    // the fingerprint after a long idle period.
     bilitools::ipc::shared::HEADERS.refresh().await?;
-    out.status("initialized: buvid3, buvid4, bili_ticket, _uuid")
+    let cookie = bilitools::ipc::shared::HEADERS.cookie().await;
+    let summary = if cookie.contains("SESSDATA=") {
+        "logged in + fingerprint present"
+    } else {
+        "fingerprint present (anonymous)"
+    };
+    out.status(summary)
 }
 
 fn init_logging(level: &str, _json: bool) {
