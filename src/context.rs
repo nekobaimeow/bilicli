@@ -116,4 +116,26 @@ mod tests {
     async fn paths_in_context_consistent() {
         let _ = ctx().await; // just don't crash
     }
+
+    /// `AppContext::build()` must bootstrap the B 站 风控 fingerprint
+    /// cookies (`buvid3`, `bili_ticket`, `_uuid`) into the global HEADERS
+    /// before any user-facing HTTP request runs. Without these, the nav
+    /// API (and by extension WBI-protected search) returns HTTP 412.
+    #[tokio::test]
+    async fn context_bootstraps_fingerprint_cookies() {
+        let _ = ctx().await.expect("ctx should build");
+        let cookie = crate::ipc::shared::HEADERS.cookie().await;
+        assert!(
+            cookie.contains("buvid3="),
+            "buvid3 missing from HEADERS — get_buvid() was not called during build; cookie={cookie}"
+        );
+        assert!(
+            cookie.contains("bili_ticket="),
+            "bili_ticket missing from HEADERS — get_bili_ticket() was not called during build; cookie={cookie}"
+        );
+        assert!(
+            cookie.contains("_uuid="),
+            "_uuid missing from HEADERS — get_uuid() was not called during build; cookie={cookie}"
+        );
+    }
 }
