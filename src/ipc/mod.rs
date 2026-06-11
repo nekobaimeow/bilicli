@@ -7,15 +7,15 @@
 //! fingerprint, aria2 RPC, FFmpeg invocations, queue scheduling,
 //! SQLite persistence) while removing the GUI layer.
 
-pub mod shared;
-pub mod storage;
-
 pub mod bilibili_api;
+pub mod danmaku;
 pub mod login;
 pub mod aria2c;
 pub mod ffmpeg;
 pub mod media;
 pub mod playurl;
 pub mod queue;
+pub mod review;
 pub mod search;
-pub mod danmaku;
+pub mod shared;
+pub mod storage;
