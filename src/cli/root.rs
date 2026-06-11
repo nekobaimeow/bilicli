@@ -105,6 +105,27 @@ pub enum Command {
         no_login_warn: bool,
     },
 
+    /// Fetch comments (reviews) for a B 站 video.
+    Review {
+        /// BV id, av id, or full URL.
+        input: String,
+        /// Sort: hot (default) or time.
+        #[arg(long, short = 's', default_value = "hot")]
+        sort: String,
+        /// Page number (1-based).
+        #[arg(long, default_value = "1")]
+        page: u32,
+        /// Results per page (max 30; 3-5 for anonymous).
+        #[arg(long, default_value = "20")]
+        ps: u32,
+        /// Fetch sub-replies for a given root rpid instead of main.
+        #[arg(long)]
+        sub: Option<String>,
+        /// Skip the "not logged in" warning.
+        #[arg(long)]
+        no_login_warn: bool,
+    },
+
     /// Cache management.
     #[command(subcommand)]
     Cache(CacheCmd),
