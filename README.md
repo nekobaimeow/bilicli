@@ -19,7 +19,7 @@
 ### 1. 编译安装
 
 ```bash
-git clone https://github.com/btjawa/BiliTools
+git clone https://github.com/nekobaimeow/bilitools-cli
 cd bilitools-cli
 cargo install --path .
 ```
@@ -232,7 +232,7 @@ code) with the Tauri GUI layer replaced by clap subcommands.
 ### Install
 
 ```bash
-git clone https://github.com/btjawa/BiliTools
+git clone https://github.com/nekobaimeow/bilitools-cli
 cd bilitools-cli
 cargo install --path .
 
