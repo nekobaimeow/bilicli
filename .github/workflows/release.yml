@@ -1,0 +1,161 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: bilitools
+            ext: ''
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: bilitools
+            ext: '.exe'
+            archive: zip
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: bilitools
+            ext: ''
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: bilitools
+            ext: ''
+            archive: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Show Rust info
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Locate binary
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_PATH="target/${{ matrix.target }}/release/${{ matrix.binary }}${{ matrix.ext }}"
+          if [ ! -f "$BIN_PATH" ]; then
+            echo "::error::Binary not found at $BIN_PATH"
+            ls -la "target/${{ matrix.target }}/release/" || true
+            exit 1
+          fi
+          echo "bin_path=$BIN_PATH" >> "$GITHUB_OUTPUT"
+          echo "Built: $BIN_PATH ($(stat -c%s "$BIN_PATH" 2>/dev/null || stat -f%z "$BIN_PATH") bytes)"
+
+      - name: Strip (Unix)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="${{ steps.locate.outputs.bin_path }}"
+          strip "$BIN" || true
+
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="${{ steps.locate.outputs.bin_path }}"
+          NAME="bilitools-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp "$BIN" "dist/$NAME/${{ matrix.binary }}${{ matrix.ext }}"
+          # Copy README + LICENSE so the archive is self-contained
+          cp README.md "dist/$NAME/README.md" 2>/dev/null || true
+          cp LICENSE "dist/$NAME/LICENSE" 2>/dev/null || true
+          cd dist
+          case "${{ matrix.archive }}" in
+            tar.gz)
+              tar -czf "${NAME}.tar.gz" "$NAME"
+              echo "asset=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+              ;;
+            zip)
+              # Use 7z on windows-latest for deterministic zip
+              7z a -tzip "${NAME}.zip" "$NAME" >/dev/null
+              echo "asset=${NAME}.zip" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+          ls -la "${NAME}".*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/${{ steps.locate.outputs.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: ls -la artifacts/
+
+      - name: Generate SHA256SUMS
+        working-directory: artifacts
+        run: |
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 \
+            | xargs -0 sha256sum > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Extract version from tag
+        id: version
+        run: echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Read Cargo.toml version
+        id: cargo
+        run: |
+          VERSION=$(grep -E '^version' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: bilitools ${{ steps.cargo.outputs.version }}
+          generate_release_notes: true
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/SHA256SUMS
+          fail_on_unmatched_files: true
