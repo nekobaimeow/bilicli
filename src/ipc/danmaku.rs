@@ -332,6 +332,11 @@ pub async fn has_login_cookie() -> bool {
     HEADERS.cookie().await.contains("SESSDATA=")
 }
 
+/// 别名 — 和 `has_login_cookie` 一样，但语义更明确（review 模块调用）
+pub async fn anonymous_mode() -> bool {
+    !has_login_cookie().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

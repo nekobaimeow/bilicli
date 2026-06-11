@@ -81,11 +81,19 @@ pub fn normalize_subtitle_url(url: &str) -> String {
 }
 
 /// 拉字幕元数据列表
+///
+/// 必须用 wbi 签名 — 不签名时 B 站返回 `data.subtitle.list=[]`（永远空），
+/// 真实字段在 `data.subtitle.subtitles[]`（需 wts + w_rid）。
 pub async fn list(bv: &str) -> Result<SubtitleList> {
     let (title, _aid, cid) = danmaku::resolve_cid(bv).await?;
-    let url = format!(
-        "https://api.bilibili.com/x/player/wbi/v2?bvid={bv}&cid={cid}"
-    );
+    let mut params: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    params.insert("bvid".into(), bv.to_string());
+    params.insert("cid".into(), cid.to_string());
+    let (query, w_rid) = shared::wbi_sign(&params)
+        .await
+        .map_err(|e| CliError::Other(format!("wbi_sign: {e}")))?;
+    let url = format!("https://api.bilibili.com/x/player/wbi/v2?{query}&w_rid={w_rid}");
     let client = shared::init_client().await.map_err(|e| CliError::Other(e.to_string()))?;
     let resp = client.get(&url).send().await.map_err(CliError::from)?;
     if !resp.status().is_success() {
@@ -167,7 +175,13 @@ pub async fn download(entry: &SubtitleEntry, output_dir: &Path) -> Result<Fetche
     })
 }
 
-/// 解析 player/wbi/v2 响应的 `data.subtitle.list[]`
+/// 解析 player/wbi/v2 响应的字幕列表
+///
+/// 重要：B 站两个字段含义不同
+/// - `data.subtitle.list[]` — 未签名版（**永远空**，只给未 wbi 客户端看）
+/// - `data.subtitle.subtitles[]` — 签名版（**真实数据**，带 url）
+///
+/// 必须读 `subtitles`。
 fn parse_entries(data: Option<&serde_json::Value>) -> Vec<SubtitleEntry> {
     let mut out = Vec::new();
     let Some(data) = data else {
@@ -176,10 +190,15 @@ fn parse_entries(data: Option<&serde_json::Value>) -> Vec<SubtitleEntry> {
     let Some(sub) = data.get("subtitle") else {
         return out;
     };
-    let Some(list) = sub.get("list").and_then(|l| l.as_array()) else {
+    // 优先读 subtitles[]（wbi 签名版），fallback 读 list[]（老接口）
+    let items = sub
+        .get("subtitles")
+        .and_then(|l| l.as_array())
+        .or_else(|| sub.get("list").and_then(|l| l.as_array()));
+    let Some(items) = items else {
         return out;
     };
-    for item in list {
+    for item in items {
         let id = item.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
         let lan = item
             .get("lan")
@@ -322,7 +341,50 @@ mod tests {
         assert_eq!(e.ai_type, "1");
     }
 
-    /// 真打 B 站 API — 字幕列表对匿名几乎都空；验证降级路径不报错。
+    #[test]
+    fn parse_entries_reads_wbi_subtitles_field() {
+        // B 站 wbi 签名版响应：真实字段是 `subtitles[]`，`list[]` 是空的
+        let v = json!({
+            "subtitle": {
+                "list": [],  // 老接口/未签名时永远空
+                "subtitles": [
+                    {
+                        "id": 2008997686963178496_i64,
+                        "lan": "zh",
+                        "lan_doc": "中文",
+                        "is_lock": false,
+                        "subtitle_url": "//aisubtitle.hdslb.com/bfs/subtitle/d1c7.json?auth_key=1781182189-xxx-0-xxx",
+                        "type": 0,
+                        "ai_status": 0,
+                        "ai_type": 0
+                    }
+                ]
+            }
+        });
+        let entries = parse_entries(Some(&v));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, 2008997686963178496);
+        assert_eq!(entries[0].lan, "zh");
+        assert!(entries[0].subtitle_url.starts_with("https://"));
+    }
+
+    #[test]
+    fn parse_entries_prefers_subtitles_over_list() {
+        // 当两个字段都存在时，优先读 subtitles（签名版有 url，list 版空）
+        let v = json!({
+            "subtitle": {
+                "list": [{"id": 1_i64, "lan": "old", "lan_doc": "old", "subtitle_url": "https://x"}],
+                "subtitles": [{"id": 2_i64, "lan": "new", "lan_doc": "new", "subtitle_url": "https://y"}]
+            }
+        });
+        let entries = parse_entries(Some(&v));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, 2);
+        assert_eq!(entries[0].lan, "new");
+    }
+
+    /// 真打 B 站 API — 字幕列表对登录用户走 wbi 签名，
+    /// 不签名时永远返回 0 entries（list 字段空），所以这测试只保证不报错。
     #[tokio::test]
     #[ignore]
     async fn list_against_real_bilibili() {
@@ -333,12 +395,21 @@ mod tests {
         assert!(!r.bv.is_empty());
         assert!(r.cid > 0);
         assert!(!r.title.is_empty());
-        // 匿名提示应该出现在 degraded
-        assert!(
-            r.degraded.iter().any(|s| s.contains("匿名")),
-            "expected anonymous degraded note, got {:?}",
-            r.degraded
-        );
+    }
+
+    /// 真打 B 站字幕接口（登录态 + wbi 签名）— 验证能拿到有 URL 的字幕
+    #[tokio::test]
+    #[ignore]
+    async fn list_against_real_bilibili_wbi_signed() {
+        let r = list("BV1XBRuBSEd7") // 已知有字幕的 UP 主上传视频
+            .await
+            .expect("list failed");
+        assert!(!r.bv.is_empty());
+        // 登录态下，subtitles[] 应该有真数据
+        assert!(!r.entries.is_empty(), "expected ≥1 subtitle for BV1XBRuBSEd7 (wbi signed)");
+        let e = &r.entries[0];
+        assert!(!e.subtitle_url.is_empty(), "subtitle_url should be non-empty after wbi sign");
+        assert!(e.subtitle_url.starts_with("https://"), "url should be normalized to https");
     }
 
     #[test]

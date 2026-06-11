@@ -138,6 +138,30 @@ pub enum Command {
         download: bool,
     },
 
+    /// Batch-fetch danmaku + reviews + subtitles for top-N search results.
+    Harvest {
+        /// Search keyword.
+        keyword: String,
+        /// Number of top results to process.
+        #[arg(long, short = 'l', default_value = "5")]
+        limit: u32,
+        /// Output directory (one subdir per video).
+        #[arg(long, short = 'o', default_value = "./harvest")]
+        output_dir: std::path::PathBuf,
+        /// Skip danmaku fetch.
+        #[arg(long)]
+        no_danmaku: bool,
+        /// Skip review fetch.
+        #[arg(long)]
+        no_review: bool,
+        /// Skip subtitle fetch.
+        #[arg(long)]
+        no_subtitle: bool,
+        /// Review page size (default 20; auto-capped to 3 for anonymous).
+        #[arg(long, default_value = "20")]
+        review_ps: u32,
+    },
+
     /// Cache management.
     #[command(subcommand)]
     Cache(CacheCmd),

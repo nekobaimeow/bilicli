@@ -7,6 +7,7 @@ pub mod config;
 pub mod danmaku;
 pub mod db;
 pub mod download;
+pub mod harvest;
 pub mod info;
 pub mod output;
 pub mod parse;
