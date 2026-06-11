@@ -56,6 +56,9 @@ impl Output {
     pub fn human() -> Self {
         Self::new(OutputMode::Human)
     }
+    pub fn is_json(&self) -> bool {
+        matches!(self.mode, OutputMode::Json)
+    }
     /// Write `ok: true` with an optional data payload.
     pub fn ok<T: Serialize>(&self, data: T) -> Result<(), CliError> {
         match self.mode {

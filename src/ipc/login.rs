@@ -325,9 +325,14 @@ pub async fn poll_scan_login(qrcode_key: &str) -> Result<ScanLoginEvent, CliErro
         }),
         Some(data) => match data.code {
             0 => {
-                // Confirmed — persist cookies
+                // Confirmed — persist cookies. Set-Cookie headers are
+                // full records like `DedeUserID=123; Path=/; Domain=...;
+                // Expires=...; Secure; SameSite=None`; we only want the
+                // `name=value` pair for our local DB.
                 for c in set_cookies {
-                    cookies::insert(&c).await?;
+                    if let Some(pair) = c.split(';').next() {
+                        cookies::insert(pair.trim()).await?;
+                    }
                 }
                 cookies::insert(&format!("refresh_token={}", data.refresh_token)).await?;
                 HEADERS.refresh().await?;
@@ -445,28 +450,22 @@ pub async fn exit() -> Result<(), CliError> {
 
 // =====================  Helpers  =====================
 
-/// Render a QR code as a PNG byte buffer using the `qrcode` crate.
+/// Render a QR code as a real PNG byte buffer using the `qrcode` crate's
+/// `image` renderer. This is a proper 2-D black-and-white image that
+/// mobile Bilibili scanners can read.
 fn render_qr_png(data: &str) -> Result<Vec<u8>, CliError> {
+    use image::Luma;
     use qrcode::render::Renderer;
     use qrcode::QrCode;
     use std::io::Cursor;
     let code = QrCode::new(data.as_bytes())
         .map_err(|e| AuthError::Qrcode(e.to_string()))?;
-    // Build a Unicode block-character string of the QR code and embed
-    // it in a tiny PNG. This avoids depending on a specific qrcode
-    // renderer version. The output is a single-row black-and-white PNG
-    // that mobile scanners can read.
-    let s: String = code
-        .render::<char>()
+    // 10px per module + 4-module quiet zone; black on white.
+    let img = code
+        .render::<Luma<u8>>()
         .quiet_zone(true)
-        .module_dimensions(2, 1)
+        .min_dimensions(400, 400)
         .build();
-    let bytes = s.into_bytes();
-    // Encode the text as a single-line PNG (1×N) — not a real image,
-    // just a placeholder. Real images are produced by the dedicated
-    // `qrcode` rendering modes if `image` feature is enabled.
-    let img = image::GrayImage::from_raw(1, bytes.len() as u32, bytes)
-        .ok_or_else(|| AuthError::Qrcode("failed to build image buffer".into()))?;
     let mut out = Vec::new();
     img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
         .map_err(|e| AuthError::Qrcode(format!("png encode failed: {e}")))?;

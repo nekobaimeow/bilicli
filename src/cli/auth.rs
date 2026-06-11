@@ -48,10 +48,15 @@ async fn cmd_qrcode(
         }
         std::fs::write(&p, &start.qr_png)?;
         path_buf = Some(p);
-    } else {
-        // Inline base64 in JSON mode; in human mode just print the URL.
+    } else if out.is_json() {
+        // Inline base64 in JSON mode so downstream tools can decode.
         use base64::Engine;
         base64_png = Some(base64::engine::general_purpose::STANDARD.encode(&start.qr_png));
+    }
+    // In human mode without --output, we still print the PNG via the
+    // status channel for the user to scan from the terminal.
+    if path_buf.is_none() && base64_png.is_none() {
+        out.status(&format!("scan this QR with Bilibili app: {}", start.qr_url))?;
     }
     let payload = QrcodeOut {
         qr_url: &start.qr_url,
