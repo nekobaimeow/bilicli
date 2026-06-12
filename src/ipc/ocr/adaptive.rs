@@ -94,13 +94,19 @@ pub struct AdaptiveSample {
 /// Worst case: full 1s-frame sampling (every frame is unique, every
 /// OCR call is needed). Best case: 2 OCR calls (a watermark video
 /// where lo and hi are already identical).
+///
+/// Returns `(samples, ocr_calls)`. `ocr_calls` is the number of
+/// ffmpeg + ocr-rs invocations actually made — needed for honest
+/// reporting (the caller was previously labelling `samples.len()`
+/// as the OCR count, which conflated "frames I committed to the
+/// output" with "frames I OCR'd").
 pub async fn run(
     engine: &OcrEngine,
     video: &Path,
     frames_dir: &Path,
     duration_sec: f32,
     cfg: &AdaptiveConfig,
-) -> Vec<AdaptiveSample> {
+) -> (Vec<AdaptiveSample>, u32) {
     // Phase 1: 1s-frame sampling, OCR every frame, build the frame array
     // and the dedup-stop samples list in one pass.
     //
@@ -185,6 +191,11 @@ pub async fn run(
     // +1/-1".
     let mut samples: Vec<AdaptiveSample> = Vec::new();
     let mut budget_remaining = cfg.max_ocr_calls;
+    // Total OCR calls the v3 recursion actually made (independent
+    // of `budget_remaining` — `budget_remaining` is the *remaining*
+    // budget, which makes the report confusing). We track the
+    // cumulative count instead.
+    let mut ocr_calls: u32 = 0;
 
     async fn v3_recurse(
         lo: i32,
@@ -192,6 +203,7 @@ pub async fn run(
         cache: &mut HashMap<i32, (PathBuf, Vec<RawDetection>)>,
         samples: &mut Vec<AdaptiveSample>,
         budget: &mut u32,
+        ocr_calls: &mut u32,
         engine: &OcrEngine,
         video: &Path,
         frames_dir: &Path,
@@ -200,41 +212,45 @@ pub async fn run(
         tracing::trace!("[v3] call lo={} hi={} budget={} samples={}", lo, hi, budget, samples.len());
         if lo > hi || *budget == 0 { tracing::trace!("[v3] early return", ); return; }
         // OCR lo
+        if *budget == 0 { tracing::trace!("[v3] budget 0, no OCR", ); return; }
         let (lo_path, lo_raws) = match ocr_frame(lo, cache, engine, video, frames_dir, cfg).await {
             Some(r) => r,
             None => { tracing::trace!("[v3] ocr_frame({}) failed", lo); return; }
         };
         *budget = budget.saturating_sub(1);
+        *ocr_calls += 1;
         tracing::trace!("[v3] OCR lo={} → raws={} (budget={})", lo, lo_raws.len(), budget);
         if lo_raws.is_empty() {
             tracing::trace!("[v3] lo={} empty, advance", lo);
-            Box::pin(v3_recurse(lo + 1, hi, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(lo + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         let lo_text = primary_content_text(&lo_raws);
         tracing::trace!("[v3] lo_text=\", {}\"", lo_text);
         if lo_text.is_empty() {
             tracing::trace!("[v3] lo={} watermark-only, advance", lo);
-            Box::pin(v3_recurse(lo + 1, hi, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(lo + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
+        if *budget == 0 { tracing::trace!("[v3] budget 0, no OCR", ); return; }
         // OCR hi
         let (hi_path, hi_raws) = match ocr_frame(hi, cache, engine, video, frames_dir, cfg).await {
             Some(r) => r,
             None => { tracing::trace!("[v3] ocr_frame({}) failed", hi); return; }
         };
         *budget = budget.saturating_sub(1);
+        *ocr_calls += 1;
         tracing::trace!("[v3] OCR hi={} → raws={} (budget={})", hi, hi_raws.len(), budget);
         if hi_raws.is_empty() {
             tracing::trace!("[v3] hi={} empty, retreat", hi);
-            Box::pin(v3_recurse(lo, hi - 1, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(lo, hi - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         let hi_text = primary_content_text(&hi_raws);
         tracing::trace!("[v3] hi_text=\", {}\"", hi_text);
         if hi_text.is_empty() {
             tracing::trace!("[v3] hi={} watermark-only, retreat", hi);
-            Box::pin(v3_recurse(lo, hi - 1, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(lo, hi - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         // Single element
@@ -257,6 +273,7 @@ pub async fn run(
             });
             return;
         }
+        if *budget == 0 { tracing::trace!("[v3] budget 0, no OCR", ); return; }
         // OCR mid
         let mid = (lo + hi) / 2;
         let (mid_path, mid_raws) = match ocr_frame(mid, cache, engine, video, frames_dir, cfg).await {
@@ -264,39 +281,40 @@ pub async fn run(
             None => { tracing::trace!("[v3] ocr_frame({}) failed", mid); return; }
         };
         *budget = budget.saturating_sub(1);
+        *ocr_calls += 1;
         tracing::trace!("[v3] OCR mid={} → raws={} (budget={})", mid, mid_raws.len(), budget);
         if mid_raws.is_empty() {
             tracing::trace!("[v3] mid={} empty, recurse both halves", mid);
-            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         let mid_text = primary_content_text(&mid_raws);
         tracing::trace!("[v3] mid_text=\", {}\"", mid_text);
         if mid_text.is_empty() {
             tracing::trace!("[v3] mid={} watermark-only, recurse both halves", mid);
-            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         // mid_text vs lo_text vs hi_text
         if mid_text == lo_text {
-            tracing::trace!("[v3]   mid==lo, recurse [lo,mid] + [mid+1,hi]", );
-            Box::pin(v3_recurse(lo, mid, cache, samples, budget, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            tracing::trace!("[v3] mid==lo, recurse [lo,mid] + [mid+1,hi]", );
+            Box::pin(v3_recurse(lo, mid, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
         } else if mid_text == hi_text {
-            tracing::trace!("[v3]   mid==hi, recurse [lo,mid-1] + [mid,hi]", );
-            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid, hi, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            tracing::trace!("[v3] mid==hi, recurse [lo,mid-1] + [mid,hi]", );
+            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(mid, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
         } else {
-            tracing::trace!("[v3]   mid distinct, recurse both halves", );
-            Box::pin(v3_recurse(lo, mid, cache, samples, budget, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, engine, video, frames_dir, cfg)).await;
+            tracing::trace!("[v3] mid distinct, recurse both halves", );
+            Box::pin(v3_recurse(lo, mid, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
         }
         let _ = (mid_path, mid_raws);
     }
 
-    v3_recurse(0, last_frame, &mut ocr_cache, &mut samples, &mut budget_remaining, engine, video, frames_dir, cfg).await;
+    v3_recurse(0, last_frame, &mut ocr_cache, &mut samples, &mut budget_remaining, &mut ocr_calls, engine, video, frames_dir, cfg).await;
 
     // ---- Sort by time ----
     samples.sort_by(|a, b| a.t_sec.partial_cmp(&b.t_sec).unwrap_or(std::cmp::Ordering::Equal));
@@ -316,8 +334,11 @@ pub async fn run(
         kept.push(s);
     }
 
-    kept
+    (kept, ocr_calls)
 }
+
+/// v3 algorithm entry — returns (samples, ocr_calls) for honest
+/// reporting.
 
 /// A "raw detection" is meaningful (worth recursing on) if:
 ///  - non-empty after trim

@@ -223,8 +223,14 @@ pub enum Command {
         /// Frame interval in seconds when `--video` is used.
         #[arg(long, default_value = "1.0")]
         interval: f32,
-        /// Maximum number of frames to OCR from a video.
-        #[arg(long, default_value = "200")]
+        /// Maximum number of frames to OCR from a video. 0 = unlimited
+        /// (one OCR per second of video, which is the 1s baseline the
+        /// v3 algorithm traverses). The v3 algorithm itself doesn't
+        /// benefit from a low cap — it stops recursing when it runs
+        /// out of budget, which truncates long videos. The user
+        /// spec is "the algorithm is a traversal, run it over the
+        /// whole video", so default is unlimited.
+        #[arg(long, default_value = "0")]
         max_frames: u32,
         /// Minimum confidence to keep a detection (0.0-1.0).
         #[arg(long, default_value = "0.45")]

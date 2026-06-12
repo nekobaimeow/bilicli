@@ -133,16 +133,27 @@ async fn run_video(
 
     let frames_dir = output_dir.join("frames");
 
-    // -------- Branch 1: adaptive (binary-search + dedup-stop) --------
+    // -------- Branch 1: adaptive (v3 two-pointer binary search) --------
     if sample_mode == SampleMode::Adaptive {
-        let samples = crate::ipc::ocr::adaptive::run(
+        // The v3 algorithm is supposed to be a full traversal of
+        // [0, duration_sec] — the user spec is "二分递归 + 退出条件
+        // lo<=right or ocr(lo)=ocr(hi)", which only makes sense as a
+        // complete sweep. A low max-ocr-calls cap truncates long
+        // videos. Treat max_frames=0 (the new default) as "unlimited,
+        // one OCR per second of video".
+        let max_ocr = if max_frames == 0 {
+            duration_sec.ceil() as u32
+        } else {
+            max_frames
+        };
+        let (samples, ocr_calls) = crate::ipc::ocr::adaptive::run(
             engine,
             &video_path,
             &frames_dir,
             duration_sec,
             &crate::ipc::ocr::adaptive::AdaptiveConfig {
                 min_segment_sec: interval.max(3.0), // reuse --interval as min_segment floor
-                max_ocr_calls: max_frames,
+                max_ocr_calls: max_ocr,
                 iou_thresh: dedup_iou,
                 text_sim_thresh: 0.5,
                 min_conf,
@@ -155,9 +166,10 @@ async fn run_video(
         }
 
         out.status(&format!(
-            "adaptive sampling: {} OCR calls (budget {})",
+            "adaptive sampling: {} samples ({} OCR calls, budget {})",
             samples.len(),
-            max_frames
+            ocr_calls,
+            max_ocr
         ));
 
         // Flatten samples into raws + capture frame_size from the
@@ -206,7 +218,7 @@ async fn run_video(
             "input": input,
             "video_path": video_path.to_string_lossy(),
             "duration_sec": duration_sec,
-            "ocr_calls": samples.len(),
+            "ocr_calls": ocr_calls,
             "dedup": {
                 "enabled": dedup_window > 0.0,
                 "raw_count": n_raw,
@@ -251,7 +263,14 @@ async fn run_video(
     }
 
     // -------- Branch 2: linear (fixed --interval) --------
-    let extract = crate::ipc::ocr::frames::extract_frames(&video_path, &frames_dir, interval, max_frames)
+    // max_frames=0 means "unlimited", i.e. cover the whole video at
+    // the given --interval. Cap = ceil(duration / interval).
+    let linear_cap = if max_frames == 0 {
+        (duration_sec / interval).ceil() as u32
+    } else {
+        max_frames
+    };
+    let extract = crate::ipc::ocr::frames::extract_frames(&video_path, &frames_dir, interval, linear_cap)
         .await
         .map_err(CliError::Other)?;
     out.status(&format!(
@@ -259,7 +278,7 @@ async fn run_video(
         extract.frames.len(),
         video_path.display(),
         interval,
-        max_frames
+        linear_cap
     ));
 
     // Collect raw detections, capturing the first frame's dimensions so
