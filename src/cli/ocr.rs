@@ -138,11 +138,13 @@ async fn run_video(
         // The v3 algorithm is supposed to be a full traversal of
         // [0, duration_sec] — the user spec is "二分递归 + 退出条件
         // lo<=right or ocr(lo)=ocr(hi)", which only makes sense as a
-        // complete sweep. A low max-ocr-calls cap truncates long
-        // videos. Treat max_frames=0 (the new default) as "unlimited,
-        // one OCR per second of video".
+        // complete sweep. The user explicitly said "v3 正确的话它自
+        // 动就是一个遍历, 完全不需要花里胡哨的参数". So the budget
+        // is purely a safety cap, not a feature knob — default to
+        // u32::MAX (effectively unlimited). Power users who want to
+        // truncate very long videos can still pass --max-frames.
         let max_ocr = if max_frames == 0 {
-            duration_sec.ceil() as u32
+            u32::MAX
         } else {
             max_frames
         };

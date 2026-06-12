@@ -127,7 +127,10 @@ pub async fn run(
     let last_frame = (duration_sec.floor() as i32).max(0);
     let mut ocr_cache: HashMap<i32, (PathBuf, Vec<RawDetection>)> = HashMap::new();
 
-    // Lazy OCR for one frame
+    // Lazy OCR for one frame. Returns (path, raws, was_cache_hit) so
+    // the caller can charge the budget + ocr_calls counter ONLY when
+    // the OCR engine was actually invoked — a cache hit shouldn't
+    // count.
     async fn ocr_frame(
         idx: i32,
         cache: &mut HashMap<i32, (PathBuf, Vec<RawDetection>)>,
@@ -135,9 +138,9 @@ pub async fn run(
         video: &Path,
         frames_dir: &Path,
         cfg: &AdaptiveConfig,
-    ) -> Option<(PathBuf, Vec<RawDetection>)> {
+    ) -> Option<(PathBuf, Vec<RawDetection>, bool)> {
         if let Some(cached) = cache.get(&idx) {
-            return Some(cached.clone());
+            return Some((cached.0.clone(), cached.1.clone(), true));
         }
         let t_sec = idx as f32;
         let frame_path = match frames::extract_single_frame(video, frames_dir, t_sec).await {
@@ -177,7 +180,7 @@ pub async fn run(
             .collect();
         let result = (frame_path, raws);
         cache.insert(idx, result.clone());
-        Some(result)
+        Some((result.0, result.1, false))
     }
 
     // Phase 2: v3 two-pointer recursion. Each recursion step:
@@ -209,53 +212,57 @@ pub async fn run(
         frames_dir: &Path,
         cfg: &AdaptiveConfig,
     ) {
-        tracing::trace!("[v3] call lo={} hi={} budget={} samples={}", lo, hi, budget, samples.len());
-        if lo > hi || *budget == 0 { tracing::trace!("[v3] early return", ); return; }
+        tracing::trace!("v3 call lo={} hi={} budget={} samples={}", lo, hi, budget, samples.len());
+        if lo > hi || *budget == 0 { tracing::trace!("v3 early return"); return; }
         // OCR lo
-        if *budget == 0 { tracing::trace!("[v3] budget 0, no OCR", ); return; }
-        let (lo_path, lo_raws) = match ocr_frame(lo, cache, engine, video, frames_dir, cfg).await {
+        if *budget == 0 { tracing::trace!("v3 budget 0, no OCR"); return; }
+        let (lo_path, lo_raws, lo_cached) = match ocr_frame(lo, cache, engine, video, frames_dir, cfg).await {
             Some(r) => r,
-            None => { tracing::trace!("[v3] ocr_frame({}) failed", lo); return; }
+            None => { tracing::warn!("v3 ocr_frame({}) failed", lo); return; }
         };
-        *budget = budget.saturating_sub(1);
-        *ocr_calls += 1;
-        tracing::trace!("[v3] OCR lo={} → raws={} (budget={})", lo, lo_raws.len(), budget);
+        if !lo_cached {
+            *budget = budget.saturating_sub(1);
+            *ocr_calls += 1;
+        }
+        tracing::trace!("v3 OCR lo={} → raws={} (cached={}, budget={})", lo, lo_raws.len(), lo_cached, budget);
         if lo_raws.is_empty() {
-            tracing::trace!("[v3] lo={} empty, advance", lo);
+            tracing::trace!("v3 lo={} empty, advance", lo);
             Box::pin(v3_recurse(lo + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         let lo_text = primary_content_text(&lo_raws);
-        tracing::trace!("[v3] lo_text=\", {}\"", lo_text);
+        tracing::trace!("v3 lo_text=\", {}\"", lo_text);
         if lo_text.is_empty() {
-            tracing::trace!("[v3] lo={} watermark-only, advance", lo);
+            tracing::trace!("v3 lo={} watermark-only, advance", lo);
             Box::pin(v3_recurse(lo + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
-        if *budget == 0 { tracing::trace!("[v3] budget 0, no OCR", ); return; }
+        if *budget == 0 { tracing::trace!("v3 budget 0, no OCR"); return; }
         // OCR hi
-        let (hi_path, hi_raws) = match ocr_frame(hi, cache, engine, video, frames_dir, cfg).await {
+        let (hi_path, hi_raws, hi_cached) = match ocr_frame(hi, cache, engine, video, frames_dir, cfg).await {
             Some(r) => r,
-            None => { tracing::trace!("[v3] ocr_frame({}) failed", hi); return; }
+            None => { tracing::warn!("v3 ocr_frame({}) failed", hi); return; }
         };
-        *budget = budget.saturating_sub(1);
-        *ocr_calls += 1;
-        tracing::trace!("[v3] OCR hi={} → raws={} (budget={})", hi, hi_raws.len(), budget);
+        if !hi_cached {
+            *budget = budget.saturating_sub(1);
+            *ocr_calls += 1;
+        }
+        tracing::trace!("v3 OCR hi={} → raws={} (cached={}, budget={})", hi, hi_raws.len(), hi_cached, budget);
         if hi_raws.is_empty() {
-            tracing::trace!("[v3] hi={} empty, retreat", hi);
+            tracing::trace!("v3 hi={} empty, retreat", hi);
             Box::pin(v3_recurse(lo, hi - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         let hi_text = primary_content_text(&hi_raws);
-        tracing::trace!("[v3] hi_text=\", {}\"", hi_text);
+        tracing::trace!("v3 hi_text=\", {}\"", hi_text);
         if hi_text.is_empty() {
-            tracing::trace!("[v3] hi={} watermark-only, retreat", hi);
+            tracing::trace!("v3 hi={} watermark-only, retreat", hi);
             Box::pin(v3_recurse(lo, hi - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         // Single element
         if lo == hi {
-            tracing::trace!("[v3] lo==hi={} push sample", lo);
+            tracing::trace!("v3 lo==hi={} push sample", lo);
             samples.push(AdaptiveSample {
                 frame: lo_path,
                 t_sec: lo as f32,
@@ -265,7 +272,7 @@ pub async fn run(
         }
         // Exit: lo_text == hi_text → whole window is one segment
         if lo_text == hi_text {
-            tracing::trace!("[v3] lo_text==hi_text push [{}, {}]={}", lo, hi, lo_text);
+            tracing::trace!("v3 lo_text==hi_text push [{}, {}]={}", lo, hi, lo_text);
             samples.push(AdaptiveSample {
                 frame: lo_path,
                 t_sec: lo as f32,
@@ -273,41 +280,43 @@ pub async fn run(
             });
             return;
         }
-        if *budget == 0 { tracing::trace!("[v3] budget 0, no OCR", ); return; }
+        if *budget == 0 { tracing::trace!("v3 budget 0, no OCR"); return; }
         // OCR mid
         let mid = (lo + hi) / 2;
-        let (mid_path, mid_raws) = match ocr_frame(mid, cache, engine, video, frames_dir, cfg).await {
+        let (mid_path, mid_raws, mid_cached) = match ocr_frame(mid, cache, engine, video, frames_dir, cfg).await {
             Some(r) => r,
-            None => { tracing::trace!("[v3] ocr_frame({}) failed", mid); return; }
+            None => { tracing::warn!("v3 ocr_frame({}) failed", mid); return; }
         };
-        *budget = budget.saturating_sub(1);
-        *ocr_calls += 1;
-        tracing::trace!("[v3] OCR mid={} → raws={} (budget={})", mid, mid_raws.len(), budget);
+        if !mid_cached {
+            *budget = budget.saturating_sub(1);
+            *ocr_calls += 1;
+        }
+        tracing::trace!("v3 OCR mid={} → raws={} (cached={}, budget={})", mid, mid_raws.len(), mid_cached, budget);
         if mid_raws.is_empty() {
-            tracing::trace!("[v3] mid={} empty, recurse both halves", mid);
+            tracing::trace!("v3 mid={} empty, recurse both halves", mid);
             Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         let mid_text = primary_content_text(&mid_raws);
-        tracing::trace!("[v3] mid_text=\", {}\"", mid_text);
+        tracing::trace!("v3 mid_text=\", {}\"", mid_text);
         if mid_text.is_empty() {
-            tracing::trace!("[v3] mid={} watermark-only, recurse both halves", mid);
+            tracing::trace!("v3 mid={} watermark-only, recurse both halves", mid);
             Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             return;
         }
         // mid_text vs lo_text vs hi_text
         if mid_text == lo_text {
-            tracing::trace!("[v3] mid==lo, recurse [lo,mid] + [mid+1,hi]", );
+            tracing::trace!("v3 mid==lo, recurse [lo,mid] + [mid+1,hi]");
             Box::pin(v3_recurse(lo, mid, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
         } else if mid_text == hi_text {
-            tracing::trace!("[v3] mid==hi, recurse [lo,mid-1] + [mid,hi]", );
+            tracing::trace!("v3 mid==hi, recurse [lo,mid-1] + [mid,hi]");
             Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             Box::pin(v3_recurse(mid, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
         } else {
-            tracing::trace!("[v3] mid distinct, recurse both halves", );
+            tracing::trace!("v3 mid distinct, recurse both halves");
             Box::pin(v3_recurse(lo, mid, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
         }
@@ -319,22 +328,15 @@ pub async fn run(
     // ---- Sort by time ----
     samples.sort_by(|a, b| a.t_sec.partial_cmp(&b.t_sec).unwrap_or(std::cmp::Ordering::Equal));
 
-    // ---- Dedup-stop pass ----
-    //
-    // Walk the sorted samples; if sample[i+1] is "basically the same
-    // content" as sample[i] (matching the user's spec: "if left image
-    // ≈ right image, stop"), drop sample[i+1].
-    let mut kept: Vec<AdaptiveSample> = Vec::with_capacity(samples.len());
-    for s in samples {
-        if let Some(prev) = kept.last() {
-            if clusters_match(&prev.raws, &s.raws, cfg.iou_thresh, cfg.text_sim_thresh) {
-                continue;
-            }
-        }
-        kept.push(s);
-    }
+    // NOTE: there is no post-hoc dedup-stop pass here. The v3 algorithm
+    // already exits recursion with the right samples: when lo_text ==
+    // hi_text it pushes one sample for the whole range; otherwise it
+    // recurses until lo == hi. A second dedup pass would only re-do
+    // work the v3 recursion already did, and (as we discovered) would
+    // also collapse watermark-bearing samples incorrectly because the
+    // watermark is present in every sample's raws.
 
-    (kept, ocr_calls)
+    (samples, ocr_calls)
 }
 
 /// v3 algorithm entry — returns (samples, ocr_calls) for honest
@@ -441,25 +443,6 @@ fn primary_content_text(raws: &[RawDetection]) -> String {
     fp
 }
 
-/// Are two detection clusters "basically the same"?
-pub fn clusters_match(
-    a: &[RawDetection],
-    b: &[RawDetection],
-    iou_thresh: f32,
-    text_thresh: f32,
-) -> bool {
-    for da in a {
-        for db in b {
-            if bbox_iou(&da.bbox, &db.bbox) >= iou_thresh
-                && text_distance_ratio(&da.text, &db.text) <= text_thresh
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,25 +469,6 @@ mod tests {
         assert!(is_meaningful_text("出"));
         assert!(is_meaningful_text("bilibili"));  // 8 ASCII chars
         assert!(is_meaningful_text("风景旅行收藏家"));
-    }
-
-    #[test]
-    fn clusters_match_same_region_similar_text() {
-        // Both have the watermark bbox (right-top) and overlapping
-        // character bag.
-        let bbox = [[1445.0, 21.0], [1903.0, 21.0], [1903.0, 109.0], [1445.0, 109.0]];
-        let a = vec![det("风景旅行收藏家bilbi", bbox)];
-        let b = vec![det("行收藏家bi", bbox)];
-        assert!(clusters_match(&a, &b, 0.6, 0.5));
-    }
-
-    #[test]
-    fn clusters_match_different_region() {
-        let top = [[1445.0, 21.0], [1903.0, 21.0], [1903.0, 109.0], [1445.0, 109.0]];
-        let bot = [[775.0, 877.0], [1143.0, 877.0], [1143.0, 959.0], [775.0, 959.0]];
-        let a = vec![det("风景旅行收藏家", top)];
-        let b = vec![det("桂林雨中游湖", bot)];
-        assert!(!clusters_match(&a, &b, 0.6, 0.5));
     }
 
     // -------------------------------------------------------------
