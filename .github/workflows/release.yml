@@ -10,32 +10,71 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.target }})
+    name: build (${{ matrix.target }}, ocr=${{ matrix.features || 'off' }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Default build (no ocr) — smallest binary, fastest CI
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: bilitools
             ext: ''
             archive: tar.gz
+            features: ''
+            asset_suffix: ''
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             binary: bilitools
             ext: '.exe'
             archive: zip
+            features: ''
+            asset_suffix: ''
           - os: macos-latest
             target: x86_64-apple-darwin
             binary: bilitools
             ext: ''
             archive: tar.gz
+            features: ''
+            asset_suffix: ''
           - os: macos-latest
             target: aarch64-apple-darwin
             binary: bilitools
             ext: ''
             archive: tar.gz
+            features: ''
+            asset_suffix: ''
+          # OCR build (--features ocr) — adds PP-OCRv5 mobile MNN engine,
+          # ~10-15 MB extra. Separate suffix so users pick deliberately.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: bilitools
+            ext: ''
+            archive: tar.gz
+            features: ocr
+            asset_suffix: '-ocr'
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: bilitools
+            ext: '.exe'
+            archive: zip
+            features: ocr
+            asset_suffix: '-ocr'
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary: bilitools
+            ext: ''
+            archive: tar.gz
+            features: ocr
+            asset_suffix: '-ocr'
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: bilitools
+            ext: ''
+            archive: tar.gz
+            features: ocr
+            asset_suffix: '-ocr'
 
     steps:
       - name: Checkout
@@ -57,7 +96,18 @@ jobs:
           cargo --version
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: |
+          if [ -n "${{ matrix.features }}" ]; then
+            # ocr-rs needs libclang for bindgen; install on Unix, choco on Windows
+            if [ "${{ matrix.os }}" = "windows-latest" ]; then
+              choco install llvm -y --no-progress --source=''
+            else
+              sudo apt-get install -y libclang-dev clang
+            fi
+            cargo build --release --locked --target ${{ matrix.target }} --features "${{ matrix.features }}"
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
 
       - name: Locate binary
         id: locate
@@ -86,12 +136,18 @@ jobs:
         run: |
           set -euo pipefail
           BIN="${{ steps.locate.outputs.bin_path }}"
-          NAME="bilitools-${{ matrix.target }}"
+          SUFFIX="${{ matrix.asset_suffix }}"
+          NAME="bilitools${{ matrix.asset_suffix }}-${{ matrix.target }}"
           mkdir -p "dist/$NAME"
           cp "$BIN" "dist/$NAME/${{ matrix.binary }}${{ matrix.ext }}"
           # Copy README + LICENSE so the archive is self-contained
           cp README.md "dist/$NAME/README.md" 2>/dev/null || true
           cp LICENSE "dist/$NAME/LICENSE" 2>/dev/null || true
+          # For OCR builds, also bundle a README explaining model placement
+          if [ -n "${{ matrix.features }}" ] && [ -f models/ocr-fast/README.md ]; then
+            mkdir -p "dist/$NAME/models/ocr-fast"
+            cp models/ocr-fast/README.md "dist/$NAME/models/ocr-fast/README.md"
+          fi
           cd dist
           case "${{ matrix.archive }}" in
             tar.gz)
