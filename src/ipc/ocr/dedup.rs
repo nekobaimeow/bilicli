@@ -183,7 +183,7 @@ fn collapse_cluster(cluster: Vec<RawDetection>, cfg: &DedupConfig) -> MergedDete
 
 /// Classify a bbox into one of four coarse categories based on its
 /// position in the frame and how long it persisted.
-fn classify(
+pub fn classify(
     bbox: &[[f32; 2]; 4],
     n_frames: u32,
     span_sec: f32,
@@ -214,9 +214,15 @@ fn classify(
     if in_corner && (is_persistent || n_frames >= 3) {
         "watermark"
     } else if in_lower_half && in_center_x {
-        // Bottom-center: either subtitle bar or chapter title
-        // Heuristic: chapter titles are usually bigger (area > 1%)
-        if area_ratio > 0.01 {
+        // Bottom-center: v6 analysis shows these are on-screen dialogue
+        // subtitles (people speaking), not chapter titles. Use the
+        // normalized height as the discriminator — chapter title fonts
+        // are large (≥6.9% of frame height, e.g. v1 h=74..94 in
+        // H=1080, h_norm=0.069..0.087), dialogue subtitles are small
+        // (≤5.8%, e.g. v6 h=42 in H=720, h_norm=0.058). Threshold 0.06
+        // sits comfortably between these (v6 → subtitle, v1 → chapter).
+        let h_norm = h / fh;
+        if h_norm > 0.06 {
             "chapter_title"
         } else {
             "subtitle"
@@ -432,5 +438,53 @@ mod tests {
             assert_eq!(ch.n_frames, 1);
             assert_eq!(ch.first_t, ch.last_t);
         }
+    }
+
+    // -------------------------------------------------------------
+    // Classify tests for Task 3 (RED)
+    // -------------------------------------------------------------
+    //
+    // v6 E2E showed bottom-center small-font text (h~42px in 720p,
+    // h_norm~0.058) was being labeled 'chapter_title' when it should
+    // be 'subtitle' (on-screen dialogue). v1 chapter titles are large
+    // (h~82-94px in 1080p, h_norm~0.076-0.087). Threshold: h_norm > 0.07.
+
+    fn bbox_for(x0: f32, y0: f32, w: f32, h: f32) -> [[f32; 2]; 4] {
+        [[x0, y0], [x0 + w, y0], [x0 + w, y0 + h], [x0, y0 + h]]
+    }
+
+    fn cfg_for(fw: u32, fh: u32) -> DedupConfig {
+        DedupConfig {
+            window_sec: 3.0,
+            iou_thresh: 0.6,
+            text_sim_thresh: 0.5,
+            video_duration_sec: 0.0,  // disables persistent watermark path
+            frame_size: (fw as f32, fh as f32),
+            ..DedupConfig::default()
+        }
+    }
+
+    #[test]
+    fn classify_v6_dialogue_subtitle() {
+        // v6: 720p, dialogue subtitle at bottom-center, h=42, h_norm=0.058
+        let bbox = bbox_for(440.0, 620.0, 400.0, 42.0);
+        let cat = classify(&bbox, 1, 1.0, &cfg_for(1280, 720));
+        assert_eq!(cat, "subtitle", "v6 bottom dialogue (h=42 in 720p) must be 'subtitle', got {cat}");
+    }
+
+    #[test]
+    fn classify_v1_chapter_title() {
+        // v1: 1080p, chapter title at bottom-center, h=82, h_norm=0.076
+        let bbox = bbox_for(775.0, 877.0, 368.0, 82.0);
+        let cat = classify(&bbox, 1, 5.0, &cfg_for(1920, 1080));
+        assert_eq!(cat, "chapter_title", "v1 chapter title (h=82 in 1080p) must be 'chapter_title', got {cat}");
+    }
+
+    #[test]
+    fn classify_top_chapter_title_unchanged() {
+        // Top-center, in_upper_half + in_center_x → chapter_title (no change)
+        let bbox = bbox_for(400.0, 50.0, 480.0, 100.0);
+        let cat = classify(&bbox, 1, 1.0, &cfg_for(1280, 720));
+        assert_eq!(cat, "chapter_title", "top-center title still 'chapter_title', got {cat}");
     }
 }
