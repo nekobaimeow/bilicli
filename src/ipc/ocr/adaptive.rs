@@ -316,11 +316,21 @@ pub async fn run(
             Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             Box::pin(v3_recurse(mid, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
         } else {
-            tracing::trace!("v3 mid distinct, recurse both halves");
-            Box::pin(v3_recurse(lo, mid, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            // mid is its own segment — neither side owns it. Push mid
+            // as a sample BEFORE recursing, then split the surrounding
+            // range into [lo, mid-1] + [mid+1, hi] so we don't double-
+            // count it. (The previous "recurse [lo, mid] + [mid+1, hi]"
+            // silently dropped mid's OCR result, see issue: v3 split
+            // could lose a whole subtitle frame.)
+            tracing::trace!("v3 mid distinct, push mid={} then recurse [lo,mid-1] + [mid+1,hi]", mid);
+            samples.push(AdaptiveSample {
+                frame: mid_path,
+                t_sec: mid as f32,
+                raws: mid_raws,
+            });
+            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
             Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
         }
-        let _ = (mid_path, mid_raws);
     }
 
     v3_recurse(0, last_frame, &mut ocr_cache, &mut samples, &mut budget_remaining, &mut ocr_calls, engine, video, frames_dir, cfg).await;
