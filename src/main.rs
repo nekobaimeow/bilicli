@@ -4,6 +4,8 @@
 use bilitools::cli::output::{Output, OutputMode};
 use bilitools::cli::root::{Cli, Command};
 use bilitools::cli::{audio, auth, cache, config as cfg, danmaku, db as dbcmd, download, harvest, info, parse as par, repl, review, schedule, search, subtitle};
+#[cfg(feature = "ocr")]
+use bilitools::cli::ocr;
 use bilitools::context;
 use bilitools::doctor;
 use bilitools::error::CliError;
@@ -72,6 +74,8 @@ async fn async_run(cli: Cli) -> Result<(), CliError> {
         Command::Subtitle { .. } => subtitle::run(&cmd, &out).await,
         Command::Harvest { .. } => harvest::run(&cmd, &out).await,
         Command::Audio { .. } => audio::run(&cmd, &out).await,
+        #[cfg(feature = "ocr")]
+        Command::Ocr { .. } => ocr::run(&cmd, &out).await,
         Command::Doctor => {
             let report = doctor::run().await?;
             out.ok(report)

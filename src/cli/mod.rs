@@ -10,6 +10,11 @@ pub mod db;
 pub mod download;
 pub mod harvest;
 pub mod info;
+/// `bilitools ocr` — offline OCR (PP-OCRv5 mobile via MNN). Gated on
+/// the `ocr` cargo feature; with the feature off the module is present
+/// in source but its `run(...)` returns a friendly error.
+#[cfg(feature = "ocr")]
+pub mod ocr;
 pub mod output;
 pub mod parse;
 pub mod repl;

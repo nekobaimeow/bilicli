@@ -205,6 +205,39 @@ pub enum Command {
         sensevoice_cli: Option<std::path::PathBuf>,
     },
 
+    /// Run offline OCR on a local image or video (PP-OCRv5 mobile via MNN).
+    ///
+    /// Use case: extract hard-coded text from screenshots, video title
+    /// cards, on-screen watermarks, B-roll subtitles, etc. — text that
+    /// B 站's own AI subtitle pipeline misses.
+    #[cfg(feature = "ocr")]
+    Ocr {
+        /// Image file path, or — with `--video` — a local video file.
+        /// (B 站 BV/AV support requires you to download first; the error
+        /// message will tell you the exact `bilitools download` command.)
+        input: String,
+        /// Treat `input` as a local video file. ffmpeg extracts frames
+        /// at `--interval` spacing and OCRs each one.
+        #[arg(long)]
+        video: bool,
+        /// Frame interval in seconds when `--video` is used.
+        #[arg(long, default_value = "1.0")]
+        interval: f32,
+        /// Maximum number of frames to OCR from a video.
+        #[arg(long, default_value = "200")]
+        max_frames: u32,
+        /// Minimum confidence to keep a detection (0.0-1.0).
+        #[arg(long, default_value = "0.45")]
+        min_conf: f32,
+        /// Output directory for `ocr.json` (and frames, with `--keep-frames`).
+        /// Defaults to `./ocr_out/<unix-timestamp>/`.
+        #[arg(long, short = 'o')]
+        output_dir: Option<std::path::PathBuf>,
+        /// Keep extracted frames on disk after OCR (default: delete).
+        #[arg(long)]
+        keep_frames: bool,
+    },
+
     /// Cache management.
     #[command(subcommand)]
     Cache(CacheCmd),
