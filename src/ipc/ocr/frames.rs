@@ -134,3 +134,101 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
         ),
     }
 }
+
+/// Extract a single frame at `t_sec` from `video`, write it to
+/// `out_dir/frame_<ts>.jpg`, and return the resulting path. Used by
+/// the adaptive-sampling loop where we only want one frame at a time.
+pub async fn extract_single_frame(
+    video: &Path,
+    out_dir: &Path,
+    t_sec: f32,
+) -> Result<PathBuf, String> {
+    tokio::fs::create_dir_all(out_dir)
+        .await
+        .map_err(|e| format!("create frames dir: {e}"))?;
+    // ffmpeg -ss t -i in -frames:v 1 -q:v 2 out.jpg
+    // The `-ss` before `-i` does a fast keyframe seek, then -frames:v 1
+    // grabs the first decoded frame at or after the seek point. For most
+    // B 站 videos this is precise to ~0.1s; for frame-accurate extraction
+    // we'd need a second -ss after -i, but adaptive sampling doesn't need
+    // that precision.
+    let out_path = out_dir.join(format!("frame_{:09.3}.jpg", t_sec));
+    let status = tokio::process::Command::new("ffmpeg")
+        .args(["-y", "-ss", &format!("{t_sec:.3}"), "-i"])
+        .arg(video)
+        .args(["-frames:v", "1", "-q:v", "2"])
+        .arg(&out_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .map_err(|e| format!("spawn ffmpeg: {e}"))?;
+    if !status.success() {
+        return Err(format!("ffmpeg (single frame at {t_sec:.3}s) exit {status}"));
+    }
+    if !out_path.exists() {
+        return Err(format!("ffmpeg reported success but {} is missing", out_path.display()));
+    }
+    Ok(out_path)
+}
+
+/// Probe the video's duration in seconds via `ffprobe -v error
+/// -show_entries format=duration -of csv=p=0`. Returns 0.0 on parse
+/// failure (caller should fall back to a default).
+pub async fn probe_duration(video: &Path) -> Result<f32, String> {
+    // Prefer `ffprobe` if present; fall back to `ffmpeg -i` + grep.
+    let probe = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(video)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await;
+    if let Ok(out) = probe {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let Ok(d) = s.trim().parse::<f32>() {
+                if d > 0.0 {
+                    return Ok(d);
+                }
+            }
+        }
+    }
+    // Fallback: spawn ffmpeg and parse stderr for "Duration: HH:MM:SS.xx"
+    let out = tokio::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg(video)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("spawn ffmpeg for probe: {e}"))?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // Look for "Duration: 00:02:43.05, start:..."
+    if let Some(idx) = stderr.find("Duration:") {
+        let after = &stderr[idx + 9..];
+        if let Some(comma) = after.find(',') {
+            let ts = after[..comma].trim();
+            return parse_hms(ts).ok_or_else(|| format!("could not parse Duration: {ts:?}"));
+        }
+    }
+    Err(format!(
+        "could not determine video duration. ffprobe missing? ffmpeg stderr did not contain 'Duration:' line."
+    ))
+}
+
+/// Parse "HH:MM:SS.xx" → seconds.
+fn parse_hms(s: &str) -> Option<f32> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let h: f32 = parts[0].parse().ok()?;
+    let m: f32 = parts[1].parse().ok()?;
+    let sec: f32 = parts[2].parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + sec)
+}

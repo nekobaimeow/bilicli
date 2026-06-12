@@ -245,6 +245,15 @@ pub enum Command {
         /// (default: 0.6). Lower = stricter (fewer merges).
         #[arg(long, default_value = "0.6")]
         dedup_iou: f32,
+        /// Frame-sampling mode for video input:
+        ///   adaptive  — binary-search recursion that stops a branch
+        ///               early when adjacent samples are "basically the
+        ///               same" content. Fewest OCRs, no missed content.
+        ///               (default)
+        ///   linear    — fixed `--interval` seconds. Predictable, more
+        ///               thorough, more redundant.
+        #[arg(long, value_enum, default_value_t = SampleMode::Adaptive)]
+        sample_mode: SampleMode,
     },
 
     /// Cache management.
@@ -260,6 +269,17 @@ pub enum Command {
 
     /// Start an interactive REPL.
     Repl,
+}
+
+/// Frame-sampling strategy for the OCR subcommand.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleMode {
+    /// Binary-search recursion with early-stop on duplicate content
+    /// (fewest OCRs, no missed content).
+    Adaptive,
+    /// Fixed `--interval` seconds, exhaustive (more OCRs, more
+    /// redundancy, but predictable).
+    Linear,
 }
 
 #[derive(Subcommand, Debug)]

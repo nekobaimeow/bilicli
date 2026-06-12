@@ -25,3 +25,5 @@ pub mod frames;
 pub mod model_paths;
 #[cfg(feature = "ocr")]
 pub mod dedup;
+#[cfg(feature = "ocr")]
+pub mod adaptive;

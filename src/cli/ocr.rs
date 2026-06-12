@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::output::Output;
-use crate::cli::root::Command;
+use crate::cli::root::{Command, SampleMode};
 use crate::error::CliError;
 
 pub async fn run(cmd: &Command, out: &Output) -> Result<(), CliError> {
@@ -23,6 +23,7 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<(), CliError> {
         keep_frames,
         dedup_window,
         dedup_iou,
+        sample_mode,
     } = cmd
     else {
         return Err(CliError::Other("internal: not Ocr command".into()));
@@ -48,6 +49,7 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<(), CliError> {
             *keep_frames,
             *dedup_window,
             *dedup_iou,
+            *sample_mode,
             &engine,
             out,
         )
@@ -112,6 +114,7 @@ async fn run_video(
     keep_frames: bool,
     dedup_window: f32,
     dedup_iou: f32,
+    sample_mode: SampleMode,
     engine: &crate::ipc::ocr::engine::OcrEngine,
     out: &Output,
 ) -> Result<(), CliError> {
@@ -119,7 +122,135 @@ async fn run_video(
 
     let video_path = resolve_video_path(input, output_dir)?;
 
+    // Probe duration for adaptive mode (linear mode uses --max-frames cap).
+    let duration_sec = crate::ipc::ocr::frames::probe_duration(&video_path)
+        .await
+        .map_err(CliError::Other)?;
+    out.status(&format!(
+        "video duration: {:.1}s, sampling mode: {:?}",
+        duration_sec, sample_mode
+    ));
+
     let frames_dir = output_dir.join("frames");
+
+    // -------- Branch 1: adaptive (binary-search + dedup-stop) --------
+    if sample_mode == SampleMode::Adaptive {
+        let samples = crate::ipc::ocr::adaptive::run(
+            engine,
+            &video_path,
+            &frames_dir,
+            duration_sec,
+            &crate::ipc::ocr::adaptive::AdaptiveConfig {
+                min_segment_sec: interval.max(3.0), // reuse --interval as min_segment floor
+                max_ocr_calls: max_frames,
+                iou_thresh: dedup_iou,
+                text_sim_thresh: 0.5,
+                min_conf,
+            },
+        )
+        .await;
+
+        if !keep_frames {
+            let _ = std::fs::remove_dir_all(&frames_dir);
+        }
+
+        out.status(&format!(
+            "adaptive sampling: {} OCR calls (budget {})",
+            samples.len(),
+            max_frames
+        ));
+
+        // Flatten samples into raws + capture frame_size from the
+        // first sample.
+        let mut raws: Vec<crate::ipc::ocr::dedup::RawDetection> = Vec::new();
+        let mut frame_size: (f32, f32) = (1920.0, 1080.0);
+        for s in &samples {
+            if let Ok(img) = image::open(&s.frame) {
+                frame_size = (img.width() as f32, img.height() as f32);
+            }
+            raws.extend(s.raws.iter().cloned());
+        }
+        // The adaptive pass already did the dedup-stop walk, but we
+        // also run the post-hoc merge so the user gets the same
+        // first_t / last_t / n_frames / category fields as the
+        // linear path.
+        let n_raw = raws.len();
+        let merged = if dedup_window > 0.0 {
+            let cfg = crate::ipc::ocr::dedup::DedupConfig {
+                window_sec: dedup_window,
+                iou_thresh: dedup_iou,
+                text_sim_thresh: 0.5,
+                frame_size,
+                video_duration_sec: duration_sec,
+            };
+            crate::ipc::ocr::dedup::merge(&raws, &cfg)
+        } else {
+            raws.iter()
+                .map(|r| crate::ipc::ocr::dedup::MergedDetection {
+                    text: r.text.clone(),
+                    first_t: r.t_sec,
+                    last_t: r.t_sec,
+                    n_frames: 1,
+                    best_conf: r.confidence,
+                    avg_conf: r.confidence,
+                    bbox: r.bbox,
+                    category: "raw",
+                })
+                .collect()
+        };
+        let n_merged = merged.len();
+
+        let result = serde_json::json!({
+            "mode": "video",
+            "sample_mode": "adaptive",
+            "input": input,
+            "video_path": video_path.to_string_lossy(),
+            "duration_sec": duration_sec,
+            "ocr_calls": samples.len(),
+            "dedup": {
+                "enabled": dedup_window > 0.0,
+                "raw_count": n_raw,
+                "merged_count": n_merged,
+                "window_sec": dedup_window,
+                "iou_thresh": dedup_iou,
+            },
+            "samples": samples.iter().map(|s| serde_json::json!({
+                "t_sec": s.t_sec,
+                "n_raw": s.raws.len(),
+            })).collect::<Vec<_>>(),
+            "detections": merged,
+        });
+
+        let json_path = output_dir.join("ocr.json");
+        std::fs::write(&json_path, serde_json::to_string_pretty(&result).unwrap())
+            .map_err(|e| CliError::Other(e.to_string()))?;
+
+        if out.is_json() {
+            out.ok(result)?;
+        } else {
+            out.status(&format!(
+                "OCR done: adaptive {} OCRs, {} raw → {} merged",
+                samples.len(),
+                n_raw,
+                n_merged
+            ));
+            for d in &merged {
+                let span = if (d.first_t - d.last_t).abs() < 0.01 {
+                    format!("{:>6.1}s", d.first_t)
+                } else {
+                    format!("{:>6.1}-{:>6.1}s", d.first_t, d.last_t)
+                };
+                out.status(&format!(
+                    "  [{}] ({:.2}, ×{}) {:>10}  {}",
+                    span, d.best_conf, d.n_frames, d.category, d.text
+                ));
+            }
+            out.status(&format!("wrote {}", json_path.display()));
+        }
+        return Ok(());
+    }
+
+    // -------- Branch 2: linear (fixed --interval) --------
     let extract = crate::ipc::ocr::frames::extract_frames(&video_path, &frames_dir, interval, max_frames)
         .await
         .map_err(CliError::Other)?;
@@ -201,6 +332,7 @@ async fn run_video(
 
     let result = serde_json::json!({
         "mode": "video",
+        "sample_mode": "linear",
         "input": input,
         "video_path": video_path.to_string_lossy(),
         "frames_processed": extract.frames.len(),
@@ -223,8 +355,12 @@ async fn run_video(
         out.ok(result)?;
     } else {
         out.status(&format!(
-            "OCR done: {} raw detections → {} merged (window {}s, iou {})",
-            n_raw, n_merged, dedup_window, dedup_iou
+            "OCR done: linear {} frames, {} raw → {} merged (window {}s, iou {})",
+            extract.frames.len(),
+            n_raw,
+            n_merged,
+            dedup_window,
+            dedup_iou
         ));
         for d in &merged {
             let span = if d.first_t == d.last_t {

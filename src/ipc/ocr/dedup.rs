@@ -232,8 +232,9 @@ fn classify(
 
 /// Bbox intersection-over-union. Two bboxes are arrays of 4 corner
 /// points in TL→TR→BR→BL order. We compute the axis-aligned bounding
-/// box of each and then the standard IoU.
-fn bbox_iou(a: &[[f32; 2]; 4], b: &[[f32; 2]; 4]) -> f32 {
+/// box of each and then the standard IoU. **Exposed for `adaptive`**
+/// which uses it to short-circuit recursive samples.
+pub fn bbox_iou(a: &[[f32; 2]; 4], b: &[[f32; 2]; 4]) -> f32 {
     let (ax0, ay0, ax1, ay1) = aabb(a);
     let (bx0, by0, bx1, by1) = aabb(b);
     let ix0 = ax0.max(bx0);
@@ -264,18 +265,11 @@ fn aabb(b: &[[f32; 2]; 4]) -> (f32, f32, f32, f32) {
 }
 
 /// Text-similarity ratio: returns a value in [0, 1] where **0 means
+/// Text-similarity ratio: returns a value in [0, 1] where **0 means
 /// the strings are identical** and **1 means completely different**.
-///
-/// We use character-bag (multiset) distance rather than Levenshtein
-/// because watermark OCR noise usually corrupts only a suffix
-/// ("bilibili" → "bilbi" / "b出" / "bb山" / "blb") while the prefix
-/// ("风景旅行收藏家") is stable. Levenshtein over the whole string
-/// reports 25-50% distance on what is clearly the same watermark;
-/// character-bag (1 − |intersection| / |union|) reports 8-15%, well
-/// under our 0.3 threshold.
-///
-/// Empty strings are considered identical to each other (distance 0).
-fn text_distance_ratio(a: &str, b: &str) -> f32 {
+/// **Exposed for `adaptive`** which uses it to short-circuit
+/// recursive samples.
+pub fn text_distance_ratio(a: &str, b: &str) -> f32 {
     if a.is_empty() && b.is_empty() {
         return 0.0;
     }
