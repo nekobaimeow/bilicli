@@ -14,13 +14,21 @@ pub struct ExtractResult {
     pub max_frames: u32,
 }
 
-/// Build the deterministic file path for a given timestamp.
+/// Build the deterministic file path for a given index (0-based frame
+/// number). Use this when generating paths for OCR output.
 pub fn frame_path(out_dir: &Path, t_sec: f32) -> PathBuf {
     out_dir.join(format!("frame_{:09.3}.jpg", t_sec))
 }
 
 /// Parse a timestamp back out of a path produced by `frame_path`.
 pub fn parse_frame_ts(p: &Path) -> Option<f32> {
+    let stem = p.file_stem()?.to_str()?;
+    stem.strip_prefix("frame_")?.parse().ok()
+}
+
+/// Parse a frame index out of an ffmpeg-numbered path (e.g.
+/// `frame_00001.jpg`). Returns None for non-matching names.
+pub fn parse_frame_index(p: &Path) -> Option<u32> {
     let stem = p.file_stem()?.to_str()?;
     stem.strip_prefix("frame_")?.parse().ok()
 }
@@ -46,7 +54,11 @@ pub async fn extract_frames(
         .map_err(|e| format!("create frames dir: {e}"))?;
 
     let fps = 1.0 / interval_sec;
-    let pattern = out_dir.join("frame_%09.3f.jpg");
+    // ffmpeg's image2 muxer requires a simple integer pattern like
+    // `%05d`; the `%.3f` / `%09.3f` patterns we tried first are
+    // rejected as invalid. The Rust side recovers the timestamp from
+    // the frame index (i × interval_sec) at OCR time.
+    let pattern = out_dir.join("frame_%05d.jpg");
 
     let mut cmd = tokio::process::Command::new("ffmpeg");
     cmd.arg("-y")
@@ -87,7 +99,11 @@ pub async fn extract_frames(
             frames.push(p);
         }
     }
-    frames.sort();
+    // Sort by frame index so output is in time order (parse_frame_index
+    // returns Option<u32>; missing/invalid names sort to the end).
+    frames.sort_by_key(|p| {
+        crate::ipc::ocr::frames::parse_frame_index(p).unwrap_or(u32::MAX)
+    });
 
     Ok(ExtractResult {
         frames,

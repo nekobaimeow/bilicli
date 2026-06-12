@@ -127,7 +127,10 @@ async fn run_video(
 
     let mut all: Vec<serde_json::Value> = Vec::new();
     for (i, frame) in extract.frames.iter().enumerate() {
-        let ts = parse_frame_ts(frame).unwrap_or(0.0);
+        // Frame index `i` was extracted at `i * interval_sec` seconds
+        // because ffmpeg's `fps=1/interval` filter produces a fixed
+        // cadence. (See `extract_frames` for the pattern.)
+        let ts = (i as f32) * interval;
         let img = image::open(frame)
             .map_err(|e| CliError::Other(format!("open {}: {e}", frame.display())))?;
         let detections = engine.recognize(&img).map_err(CliError::Other)?;
