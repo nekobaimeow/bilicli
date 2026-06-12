@@ -293,4 +293,164 @@ mod tests {
         let b = vec![det("桂林雨中游湖", bot)];
         assert!(!clusters_match(&a, &b, 0.6, 0.5));
     }
+
+    // -------------------------------------------------------------
+    // v2 sliding-window tests (Task 1 — RED)
+    // -------------------------------------------------------------
+    //
+    // Mock OcrEngine that returns a different "title_N" text for each
+    // time point. Used to simulate a video where every 1-second slice
+    // has an independent detection (worst case for the adaptive sampler).
+    //
+    // The v2 algorithm must:
+    //   1. Capture every independent segment (information completeness
+    //      equivalent to 1s-frame sampling baseline)
+    //   2. Skip frames whose text is identical to a neighbor
+    //   3. Use fewer OCR calls than the linear baseline
+
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    /// Mock engine backed by a HashMap<t_sec, text>. Returns "" for
+    /// unknown time points (treats them as text-free frames).
+    struct MockEngine {
+        frames: HashMap<i32, String>,
+        calls: Arc<Mutex<Vec<f32>>>,
+    }
+
+    impl MockEngine {
+        fn new(spec: &[(&str, f32)]) -> Self {
+            // spec: (text, t_sec) pairs — records the text that should
+            // be returned for the 1s frame closest to t_sec
+            let mut frames = HashMap::new();
+            for (text, t) in spec {
+                let key = t.round() as i32;
+                frames.insert(key, text.to_string());
+            }
+            Self { frames, calls: Arc::new(Mutex::new(vec![])) }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+
+        fn calls(&self) -> Vec<f32> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    /// Simulate the v2 algorithm core (decide-only, no frame extraction).
+    /// Returns the list of (t_sec, text) pairs that the algorithm would
+    /// keep as independent detections.
+    ///
+    /// This is a pure function — we test the decision logic without
+    /// needing ffmpeg/ocr-rs. The real `run_v2` will be a wrapper that
+    /// calls this and performs the actual OCR.
+    fn v2_decide(
+        spec: &HashMap<i32, String>,
+        lo: f32,
+        hi: f32,
+        min_seg: f32,
+        max_calls: u32,
+    ) -> Vec<(f32, String)> {
+        let mut results = vec![];
+        let mut calls_made: u32 = 0;
+        let mut work = vec![(lo, hi)];
+
+        // OCR helper: returns text at t_sec (or "" if not in spec / noise)
+        let ocr_at = |t: f32| -> String {
+            let key = t.round() as i32;
+            spec.get(&key).cloned().unwrap_or_default()
+        };
+
+        while let Some((lo, hi)) = work.pop() {
+            if calls_made >= max_calls { break; }
+            if hi - lo < min_seg { continue; }
+            let mid = (lo + hi) * 0.5;
+            calls_made += 1;
+            let mid_text = ocr_at(mid);
+
+            if mid_text.is_empty() {
+                // No text in this frame; whole range is text-free
+                continue;
+            }
+
+            // Real-time dedup: is mid_text the same as the last result?
+            if let Some((_, prev_text)) = results.last() {
+                if prev_text == &mid_text {
+                    // Same segment as previous; advance lo (left+1)
+                    // Don't push a new result; don't recurse into left
+                    // (we already know the left half is "the same")
+                    // But still recurse into right (might have new content)
+                    if mid < hi - min_seg {
+                        work.push((mid, hi));
+                    }
+                    continue;
+                }
+            }
+
+            // New independent segment
+            results.push((mid, mid_text.clone()));
+
+            // Recurse into both halves
+            if mid - lo >= min_seg {
+                work.push((lo, mid));
+            }
+            if hi - mid >= min_seg {
+                work.push((mid, hi));
+            }
+        }
+        results
+    }
+
+    #[test]
+    fn v2_recognizes_all_56_segments_of_v6() {
+        // Simulate v6: 56 different 1-second segments, each with a unique
+        // title. Every text is different from its neighbors.
+        let mut spec = HashMap::new();
+        for i in 0..56 {
+            spec.insert(i, format!("title_{}", i));
+        }
+        let results = v2_decide(&spec, 0.0, 56.0, 1.0, 200);
+        // v2 must capture every one of the 56 unique segments
+        // (information completeness equivalent to 1s sampling)
+        assert_eq!(results.len(), 56,
+                   "v2 must capture all 56 unique segments, got {} (calls: text spec has 56 distinct)",
+                   results.len());
+    }
+
+    #[test]
+    fn v2_skips_redundant_watermark_frames() {
+        // Simulate a video where one title persists for 30 seconds:
+        // a watermark visible at every 1s frame.
+        let mut spec = HashMap::new();
+        for i in 0..30 {
+            spec.insert(i, "PERSISTENT_WATERMARK".to_string());
+        }
+        let results = v2_decide(&spec, 0.0, 30.0, 1.0, 200);
+        // All 30 frames have IDENTICAL text → only 1 detection
+        assert_eq!(results.len(), 1,
+                   "redundant watermark should collapse to 1 detection, got {}",
+                   results.len());
+    }
+
+    #[test]
+    fn v2_handles_sparse_subtitle_pattern() {
+        // Real-world subtitle timing: 5 seconds of subtitle, then 5
+        // seconds of silence, then a different subtitle for 5 seconds,
+        // etc. 30 seconds total, 3 distinct subtitle strings.
+        let mut spec = HashMap::new();
+        for i in 0..5 { spec.insert(i, "第一句".to_string()); }
+        // 5..10 is silence (no entry)
+        for i in 10..15 { spec.insert(i, "第二句".to_string()); }
+        // 15..20 silence
+        for i in 20..25 { spec.insert(i, "第三句".to_string()); }
+        // 25..30 silence
+
+        let results = v2_decide(&spec, 0.0, 30.0, 1.0, 200);
+        // Should capture all 3 distinct subtitles
+        assert_eq!(results.len(), 3,
+                   "3 distinct subtitles expected, got {} (text: {:?})",
+                   results.len(), results);
+    }
 }
