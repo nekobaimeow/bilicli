@@ -107,6 +107,58 @@ pub async fn run(
     duration_sec: f32,
     cfg: &AdaptiveConfig,
 ) -> (Vec<AdaptiveSample>, u32) {
+    use std::collections::HashMap;
+    let last_frame = (duration_sec.floor() as i32).max(0);
+    if last_frame < 0 {
+        // Video shorter than 1 second — nothing to do.
+        return (Vec::new(), 0);
+    }
+
+    // ----------------------------------------------------------------
+    // Phase 0 (one-shot ffmpeg): pre-extract every 1s frame to disk.
+    //
+    // Why: v3's previous implementation called
+    //   `frames::extract_single_frame(video, frames_dir, t_sec)`
+    // once per OCR. Each call spawns a new ffmpeg process
+    // (`ffmpeg -ss t -i in -frames:v 1 ...`), which costs ~1.5s of
+    // process-startup overhead per call. The OCR-engine work itself
+    // is ~0.5s/frame on this hardware, so a 46-OCR v3 run spent
+    // ~69s on ffmpeg startup vs ~27s on actual recognition — the
+    // startup cost overwhelmed the 4-5× OCR reduction.
+    //
+    // Linear mode already uses `extract_frames` (one ffmpeg spawn for
+    // the whole video at fps=1). We adopt the same strategy: do the
+    // 1s extraction ONCE up front, then the v3 algorithm reads the
+    // per-second JPEGs from disk. Disk cost is negligible
+    // (~1.5MB × duration_sec ≈ 320MB for a 215s 1080p video) and
+    // we save the full per-frame ffmpeg-spawn cost.
+    //
+    // We use `u32::MAX` as the cap so ffmpeg extracts every 1s
+    // frame the source actually contains (e.g. a 118.4s video
+    // yields frames 1..118, not 119). The `last_frame` we hand the
+    // v3 recursion must match the actual file count, not the
+    // rounded duration — otherwise the root call asks for
+    // `frame_00119.jpg` and gets a cache miss.
+    // ----------------------------------------------------------------
+    let extract = match frames::extract_frames(video, frames_dir, 1.0, u32::MAX).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("v3 Phase 0 extract_frames failed: {e}");
+            return (Vec::new(), 0);
+        }
+    };
+    let n_frames = extract.frames.len() as i32;
+    let last_frame = n_frames.saturating_sub(1).max(0);
+    if last_frame < 0 {
+        return (Vec::new(), 0);
+    }
+    tracing::trace!(
+        "v3 Phase 0: extracted {} frames to {} (1s baseline); last_frame={}",
+        n_frames,
+        frames_dir.display(),
+        last_frame
+    );
+
     // Phase 1: 1s-frame sampling, OCR every frame, build the frame array
     // and the dedup-stop samples list in one pass.
     //
@@ -123,19 +175,20 @@ pub async fn run(
     // equivalent to a 1s baseline linear run, but with the v3
     // exit-condition (lo_text == hi_text) baked into the structure
     // so persistent watermarks don't pollute the final output.
-    use std::collections::HashMap;
-    let last_frame = (duration_sec.floor() as i32).max(0);
     let mut ocr_cache: HashMap<i32, (PathBuf, Vec<RawDetection>)> = HashMap::new();
 
     // Lazy OCR for one frame. Returns (path, raws, was_cache_hit) so
     // the caller can charge the budget + ocr_calls counter ONLY when
     // the OCR engine was actually invoked — a cache hit shouldn't
     // count.
+    //
+    // Frame lookup: Phase 0 wrote `frames_dir/frame_NNNNN.jpg` with
+    // N = idx + 1 (ffmpeg's image2 muxer is 1-indexed). We just read
+    // the file — no ffmpeg spawn.
     async fn ocr_frame(
         idx: i32,
         cache: &mut HashMap<i32, (PathBuf, Vec<RawDetection>)>,
         engine: &OcrEngine,
-        video: &Path,
         frames_dir: &Path,
         cfg: &AdaptiveConfig,
     ) -> Option<(PathBuf, Vec<RawDetection>, bool)> {
@@ -143,14 +196,13 @@ pub async fn run(
             return Some((cached.0.clone(), cached.1.clone(), true));
         }
         let t_sec = idx as f32;
-        let frame_path = match frames::extract_single_frame(video, frames_dir, t_sec).await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("extract_single_frame({t_sec:.2}s) failed: {e}");
-                cache.insert(idx, (PathBuf::new(), vec![]));
-                return None;
-            }
-        };
+        // ffmpeg image2 muxer numbers from 1, so idx 0 → frame_00001.jpg.
+        let frame_path = frames_dir.join(format!("frame_{:05}.jpg", idx + 1));
+        if !frame_path.exists() {
+            tracing::warn!("v3 missing pre-extracted frame {}", frame_path.display());
+            cache.insert(idx, (PathBuf::new(), vec![]));
+            return None;
+        }
         let img = match image::open(&frame_path) {
             Ok(i) => i,
             Err(e) => {
@@ -240,7 +292,6 @@ pub async fn run(
         budget: &mut u32,
         ocr_calls: &mut u32,
         engine: &OcrEngine,
-        video: &Path,
         frames_dir: &Path,
         cfg: &AdaptiveConfig,
     ) {
@@ -262,14 +313,14 @@ pub async fn run(
             // Need a fresh hi frame for the new range — fetch it once
             // via the cache (or OCR if first time). Then recurse.
             let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                hi_idx, cache, engine, video, frames_dir, cfg,
+                hi_idx, cache, engine, frames_dir, cfg,
             ).await {
                 Some(r) => r,
                 None => return,
             };
             // lo is invalid; try the next idx as the new lo
             let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                lo_idx + 1, cache, engine, video, frames_dir, cfg,
+                lo_idx + 1, cache, engine, frames_dir, cfg,
             ).await {
                 Some(r) => r,
                 None => return,
@@ -282,7 +333,7 @@ pub async fn run(
                 lo_idx + 1, new_lo_path, new_lo_raws,
                 hi_idx, new_hi_path, new_hi_raws,
                 cache, samples, budget, ocr_calls,
-                engine, video, frames_dir, cfg,
+                engine, frames_dir, cfg,
             )).await;
             return;
         }
@@ -292,13 +343,13 @@ pub async fn run(
             tracing::trace!("v3 hi={} invalid, retreat", hi_idx);
             if lo_idx > hi_idx - 1 { return; }
             let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                lo_idx, cache, engine, video, frames_dir, cfg,
+                lo_idx, cache, engine, frames_dir, cfg,
             ).await {
                 Some(r) => r,
                 None => return,
             };
             let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                hi_idx - 1, cache, engine, video, frames_dir, cfg,
+                hi_idx - 1, cache, engine, frames_dir, cfg,
             ).await {
                 Some(r) => r,
                 None => return,
@@ -307,7 +358,7 @@ pub async fn run(
                 lo_idx, new_lo_path, new_lo_raws,
                 hi_idx - 1, new_hi_path, new_hi_raws,
                 cache, samples, budget, ocr_calls,
-                engine, video, frames_dir, cfg,
+                engine, frames_dir, cfg,
             )).await;
             return;
         }
@@ -360,7 +411,7 @@ pub async fn run(
             return;
         }
         let (mid_path, mid_raws, mid_cached) = match ocr_frame(
-            mid_idx, cache, engine, video, frames_dir, cfg,
+            mid_idx, cache, engine, frames_dir, cfg,
         ).await {
             Some(r) => r,
             None => {
@@ -369,7 +420,7 @@ pub async fn run(
                 if lo_idx <= mid_idx - 1 {
                     // need new hi = mid_idx - 1
                     let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                        mid_idx - 1, cache, engine, video, frames_dir, cfg,
+                        mid_idx - 1, cache, engine, frames_dir, cfg,
                     ).await {
                         Some(r) => r,
                         None => return,
@@ -378,12 +429,12 @@ pub async fn run(
                         lo_idx, lo_path.clone(), lo_raws.clone(),
                         mid_idx - 1, new_hi_path, new_hi_raws,
                         cache, samples, budget, ocr_calls,
-                        engine, video, frames_dir, cfg,
+                        engine, frames_dir, cfg,
                     )).await;
                 }
                 if mid_idx + 1 <= hi_idx {
                     let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                        mid_idx + 1, cache, engine, video, frames_dir, cfg,
+                        mid_idx + 1, cache, engine, frames_dir, cfg,
                     ).await {
                         Some(r) => r,
                         None => return,
@@ -392,7 +443,7 @@ pub async fn run(
                         mid_idx + 1, new_lo_path, new_lo_raws,
                         hi_idx, hi_path.clone(), hi_raws.clone(),
                         cache, samples, budget, ocr_calls,
-                        engine, video, frames_dir, cfg,
+                        engine, frames_dir, cfg,
                     )).await;
                 }
                 return;
@@ -409,7 +460,7 @@ pub async fn run(
             tracing::trace!("v3 mid={} invalid, skip + recurse both sides", mid_idx);
             if lo_idx <= mid_idx - 1 {
                 let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                    mid_idx - 1, cache, engine, video, frames_dir, cfg,
+                    mid_idx - 1, cache, engine, frames_dir, cfg,
                 ).await {
                     Some(r) => r,
                     None => return,
@@ -418,12 +469,12 @@ pub async fn run(
                     lo_idx, lo_path.clone(), lo_raws.clone(),
                     mid_idx - 1, new_hi_path, new_hi_raws,
                     cache, samples, budget, ocr_calls,
-                    engine, video, frames_dir, cfg,
+                    engine, frames_dir, cfg,
                 )).await;
             }
             if mid_idx + 1 <= hi_idx {
                 let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                    mid_idx + 1, cache, engine, video, frames_dir, cfg,
+                    mid_idx + 1, cache, engine, frames_dir, cfg,
                 ).await {
                     Some(r) => r,
                     None => return,
@@ -432,7 +483,7 @@ pub async fn run(
                     mid_idx + 1, new_lo_path, new_lo_raws,
                     hi_idx, hi_path.clone(), hi_raws.clone(),
                     cache, samples, budget, ocr_calls,
-                    engine, video, frames_dir, cfg,
+                    engine, frames_dir, cfg,
                 )).await;
             }
             return;
@@ -451,11 +502,11 @@ pub async fn run(
                 lo_idx, lo_path, lo_raws,
                 mid_idx, mid_path, mid_raws,
                 cache, samples, budget, ocr_calls,
-                engine, video, frames_dir, cfg,
+                engine, frames_dir, cfg,
             )).await;
             if mid_idx + 1 <= hi_idx {
                 let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                    mid_idx + 1, cache, engine, video, frames_dir, cfg,
+                    mid_idx + 1, cache, engine, frames_dir, cfg,
                 ).await {
                     Some(r) => r,
                     None => return,
@@ -464,7 +515,7 @@ pub async fn run(
                     mid_idx + 1, new_lo_path, new_lo_raws,
                     hi_idx, hi_path, hi_raws,
                     cache, samples, budget, ocr_calls,
-                    engine, video, frames_dir, cfg,
+                    engine, frames_dir, cfg,
                 )).await;
             }
         } else if mid_text == hi_text {
@@ -473,7 +524,7 @@ pub async fn run(
             tracing::trace!("v3 mid==hi, recurse [lo,mid-1] + [mid,hi]");
             if lo_idx <= mid_idx - 1 {
                 let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                    mid_idx - 1, cache, engine, video, frames_dir, cfg,
+                    mid_idx - 1, cache, engine, frames_dir, cfg,
                 ).await {
                     Some(r) => r,
                     None => return,
@@ -482,14 +533,14 @@ pub async fn run(
                     lo_idx, lo_path, lo_raws,
                     mid_idx - 1, new_hi_path, new_hi_raws,
                     cache, samples, budget, ocr_calls,
-                    engine, video, frames_dir, cfg,
+                    engine, frames_dir, cfg,
                 )).await;
             }
             Box::pin(v3_recurse(
                 mid_idx, mid_path, mid_raws,
                 hi_idx, hi_path, hi_raws,
                 cache, samples, budget, ocr_calls,
-                engine, video, frames_dir, cfg,
+                engine, frames_dir, cfg,
             )).await;
         } else {
             // mid is its own segment, distinct from BOTH lo and hi.
@@ -509,7 +560,7 @@ pub async fn run(
             });
             if lo_idx <= mid_idx - 1 {
                 let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                    mid_idx - 1, cache, engine, video, frames_dir, cfg,
+                    mid_idx - 1, cache, engine, frames_dir, cfg,
                 ).await {
                     Some(r) => r,
                     None => return,
@@ -518,12 +569,12 @@ pub async fn run(
                     lo_idx, lo_path, lo_raws,
                     mid_idx - 1, new_hi_path, new_hi_raws,
                     cache, samples, budget, ocr_calls,
-                    engine, video, frames_dir, cfg,
+                    engine, frames_dir, cfg,
                 )).await;
             }
             if mid_idx + 1 <= hi_idx {
                 let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                    mid_idx + 1, cache, engine, video, frames_dir, cfg,
+                    mid_idx + 1, cache, engine, frames_dir, cfg,
                 ).await {
                     Some(r) => r,
                     None => return,
@@ -532,7 +583,7 @@ pub async fn run(
                     mid_idx + 1, new_lo_path, new_lo_raws,
                     hi_idx, hi_path, hi_raws,
                     cache, samples, budget, ocr_calls,
-                    engine, video, frames_dir, cfg,
+                    engine, frames_dir, cfg,
                 )).await;
             }
         }
@@ -542,12 +593,8 @@ pub async fn run(
     // to v3_recurse. v3_recurse only ever invokes the OCR engine for
     // midpoints; root OCRs (lo=0 and hi=last_frame) happen here.
     let last_frame_idx = last_frame;
-    if last_frame_idx < 0 {
-        // Video shorter than 1 second — nothing to do.
-        return (samples, ocr_calls);
-    }
     let (lo_path, lo_raws, lo_cached) = match ocr_frame(
-        0, &mut ocr_cache, engine, video, frames_dir, cfg,
+        0, &mut ocr_cache, engine, frames_dir, cfg,
     ).await {
         Some(r) => r,
         None => return (samples, ocr_calls),
@@ -557,7 +604,7 @@ pub async fn run(
         ocr_calls += 1;
     }
     let (hi_path, hi_raws, hi_cached) = match ocr_frame(
-        last_frame_idx, &mut ocr_cache, engine, video, frames_dir, cfg,
+        last_frame_idx, &mut ocr_cache, engine, frames_dir, cfg,
     ).await {
         Some(r) => r,
         None => return (samples, ocr_calls),
@@ -574,7 +621,7 @@ pub async fn run(
         0, lo_path, lo_raws,
         last_frame_idx, hi_path, hi_raws,
         &mut ocr_cache, &mut samples, &mut budget_remaining, &mut ocr_calls,
-        engine, video, frames_dir, cfg,
+        engine, frames_dir, cfg,
     ).await;
 
     // ---- Sort by time ----
