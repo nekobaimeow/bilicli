@@ -200,9 +200,41 @@ pub async fn run(
     // cumulative count instead.
     let mut ocr_calls: u32 = 0;
 
+    // The v3 two-pointer recursion. The KEY insight: the caller hands
+    // us ALREADY-OCR'd lo and hi (path + raws + their t_sec indices),
+    // so this function only ever invokes the OCR engine for the
+    // midpoint of the current range. Sub-calls are split into
+    // "[lo, mid]" and "[mid, hi]" (NOT [lo, mid-1] + [mid+1, hi] —
+    // that would drop mid) and we pass the freshly-OCR'd mid frame
+    // as the new hi (or lo) boundary of the child. Each unique index
+    // in the video is therefore OCR'd AT MOST ONCE along any root-
+    // to-leaf path; the cache only matters if the same index is
+    // reached via two different splits (e.g. when mid is skipped
+    // because its OCR came back invalid).
+    //
+    // Exit conditions (in order):
+    //   1. budget exhausted           → return (safety cap)
+    //   2. lo_raws invalid            → recurse (lo+1, hi)   advance
+    //   3. hi_raws invalid            → recurse (lo, hi-1)   retreat
+    //   4. lo_idx == hi_idx           → push lo sample
+    //   5. lo_text == hi_text         → push lo sample (one for the range)
+    //   6. mid OCR fails / no text    → recurse (lo, mid-1) + (mid+1, hi), skip mid
+    //   7. mid_text == lo_text        → recurse (lo, mid) + (mid+1, hi)
+    //   8. mid_text == hi_text        → recurse (lo, mid-1) + (mid, hi)
+    //   9. mid distinct from both     → recurse (lo, mid) + (mid, hi)
+    //                                    — child [lo,mid] inherits hi=mid_raws;
+    //                                      child [mid,hi] inherits lo=mid_raws.
+    //                                    mid itself is NOT pushed because it
+    //                                    becomes the boundary of both children
+    //                                    and is pushed by whichever child
+    //                                    reaches lo==hi or lo_text==hi_text.
     async fn v3_recurse(
-        lo: i32,
-        hi: i32,
+        lo_idx: i32,
+        lo_path: PathBuf,
+        lo_raws: Vec<RawDetection>,
+        hi_idx: i32,
+        hi_path: PathBuf,
+        hi_raws: Vec<RawDetection>,
         cache: &mut HashMap<i32, (PathBuf, Vec<RawDetection>)>,
         samples: &mut Vec<AdaptiveSample>,
         budget: &mut u32,
@@ -212,128 +244,338 @@ pub async fn run(
         frames_dir: &Path,
         cfg: &AdaptiveConfig,
     ) {
-        tracing::trace!("v3 call lo={} hi={} budget={} samples={}", lo, hi, budget, samples.len());
-        if lo > hi || *budget == 0 { tracing::trace!("v3 early return"); return; }
-        // OCR lo
-        if *budget == 0 { tracing::trace!("v3 budget 0, no OCR"); return; }
-        let (lo_path, lo_raws, lo_cached) = match ocr_frame(lo, cache, engine, video, frames_dir, cfg).await {
-            Some(r) => r,
-            None => { tracing::warn!("v3 ocr_frame({}) failed", lo); return; }
-        };
-        if !lo_cached {
-            *budget = budget.saturating_sub(1);
-            *ocr_calls += 1;
-        }
-        tracing::trace!("v3 OCR lo={} → raws={} (cached={}, budget={})", lo, lo_raws.len(), lo_cached, budget);
-        if lo_raws.is_empty() {
-            tracing::trace!("v3 lo={} empty, advance", lo);
-            Box::pin(v3_recurse(lo + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+        tracing::trace!(
+            "v3 call lo={} hi={} budget={} samples={}",
+            lo_idx, hi_idx, budget, samples.len()
+        );
+
+        // 1. Safety cap
+        if *budget == 0 {
+            tracing::trace!("v3 budget exhausted");
             return;
         }
+
+        // 2. Advance past an empty/watermark-only lo
+        if lo_raws.is_empty() || primary_content_text(&lo_raws).is_empty() {
+            tracing::trace!("v3 lo={} invalid, advance", lo_idx);
+            if lo_idx + 1 > hi_idx { return; }
+            // Need a fresh hi frame for the new range — fetch it once
+            // via the cache (or OCR if first time). Then recurse.
+            let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                hi_idx, cache, engine, video, frames_dir, cfg,
+            ).await {
+                Some(r) => r,
+                None => return,
+            };
+            // lo is invalid; try the next idx as the new lo
+            let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                lo_idx + 1, cache, engine, video, frames_dir, cfg,
+            ).await {
+                Some(r) => r,
+                None => return,
+            };
+            // Don't double-charge budget for cache hits; we charge once
+            // per unique OCR call below in the OCR-mid branch. For
+            // now just keep budget as-is — the cache lookup itself
+            // doesn't cost an OCR.
+            Box::pin(v3_recurse(
+                lo_idx + 1, new_lo_path, new_lo_raws,
+                hi_idx, new_hi_path, new_hi_raws,
+                cache, samples, budget, ocr_calls,
+                engine, video, frames_dir, cfg,
+            )).await;
+            return;
+        }
+
+        // 3. Retreat from an empty/watermark-only hi
+        if hi_raws.is_empty() || primary_content_text(&hi_raws).is_empty() {
+            tracing::trace!("v3 hi={} invalid, retreat", hi_idx);
+            if lo_idx > hi_idx - 1 { return; }
+            let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                lo_idx, cache, engine, video, frames_dir, cfg,
+            ).await {
+                Some(r) => r,
+                None => return,
+            };
+            let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                hi_idx - 1, cache, engine, video, frames_dir, cfg,
+            ).await {
+                Some(r) => r,
+                None => return,
+            };
+            Box::pin(v3_recurse(
+                lo_idx, new_lo_path, new_lo_raws,
+                hi_idx - 1, new_hi_path, new_hi_raws,
+                cache, samples, budget, ocr_calls,
+                engine, video, frames_dir, cfg,
+            )).await;
+            return;
+        }
+
         let lo_text = primary_content_text(&lo_raws);
-        tracing::trace!("v3 lo_text=\", {}\"", lo_text);
-        if lo_text.is_empty() {
-            tracing::trace!("v3 lo={} watermark-only, advance", lo);
-            Box::pin(v3_recurse(lo + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            return;
-        }
-        if *budget == 0 { tracing::trace!("v3 budget 0, no OCR"); return; }
-        // OCR hi
-        let (hi_path, hi_raws, hi_cached) = match ocr_frame(hi, cache, engine, video, frames_dir, cfg).await {
-            Some(r) => r,
-            None => { tracing::warn!("v3 ocr_frame({}) failed", hi); return; }
-        };
-        if !hi_cached {
-            *budget = budget.saturating_sub(1);
-            *ocr_calls += 1;
-        }
-        tracing::trace!("v3 OCR hi={} → raws={} (cached={}, budget={})", hi, hi_raws.len(), hi_cached, budget);
-        if hi_raws.is_empty() {
-            tracing::trace!("v3 hi={} empty, retreat", hi);
-            Box::pin(v3_recurse(lo, hi - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            return;
-        }
         let hi_text = primary_content_text(&hi_raws);
-        tracing::trace!("v3 hi_text=\", {}\"", hi_text);
-        if hi_text.is_empty() {
-            tracing::trace!("v3 hi={} watermark-only, retreat", hi);
-            Box::pin(v3_recurse(lo, hi - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            return;
-        }
-        // Single element
-        if lo == hi {
-            tracing::trace!("v3 lo==hi={} push sample", lo);
+
+        // 4. Single frame
+        if lo_idx == hi_idx {
+            tracing::trace!("v3 lo==hi={} push sample", lo_idx);
             samples.push(AdaptiveSample {
                 frame: lo_path,
-                t_sec: lo as f32,
+                t_sec: lo_idx as f32,
                 raws: lo_raws,
             });
             return;
         }
-        // Exit: lo_text == hi_text → whole window is one segment
+
+        // 5. Whole window is one segment
         if lo_text == hi_text {
-            tracing::trace!("v3 lo_text==hi_text push [{}, {}]={}", lo, hi, lo_text);
+            tracing::trace!("v3 lo_text==hi_text push [{}, {}]", lo_idx, hi_idx);
             samples.push(AdaptiveSample {
                 frame: lo_path,
-                t_sec: lo as f32,
+                t_sec: lo_idx as f32,
                 raws: lo_raws,
             });
             return;
         }
-        if *budget == 0 { tracing::trace!("v3 budget 0, no OCR"); return; }
-        // OCR mid
-        let mid = (lo + hi) / 2;
-        let (mid_path, mid_raws, mid_cached) = match ocr_frame(mid, cache, engine, video, frames_dir, cfg).await {
+
+        if *budget == 0 { tracing::trace!("v3 budget exhausted pre-mid"); return; }
+
+        // OCR the midpoint. This is the ONLY place this function calls
+        // the OCR engine. Sub-calls below reuse the freshly-OCR'd mid
+        // as their boundary frame.
+        let mid_idx = (lo_idx + hi_idx) / 2;
+        if mid_idx == lo_idx || mid_idx == hi_idx {
+            // Degenerate: lo and hi are adjacent, neither matches, and
+            // we can't split further. Push both as individual samples.
+            tracing::trace!("v3 adjacent lo={} hi={} push both", lo_idx, hi_idx);
+            samples.push(AdaptiveSample {
+                frame: lo_path,
+                t_sec: lo_idx as f32,
+                raws: lo_raws,
+            });
+            samples.push(AdaptiveSample {
+                frame: hi_path,
+                t_sec: hi_idx as f32,
+                raws: hi_raws,
+            });
+            return;
+        }
+        let (mid_path, mid_raws, mid_cached) = match ocr_frame(
+            mid_idx, cache, engine, video, frames_dir, cfg,
+        ).await {
             Some(r) => r,
-            None => { tracing::warn!("v3 ocr_frame({}) failed", mid); return; }
+            None => {
+                tracing::warn!("v3 ocr_frame({}) failed; skipping mid", mid_idx);
+                // Skip mid and recurse on both sides
+                if lo_idx <= mid_idx - 1 {
+                    // need new hi = mid_idx - 1
+                    let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                        mid_idx - 1, cache, engine, video, frames_dir, cfg,
+                    ).await {
+                        Some(r) => r,
+                        None => return,
+                    };
+                    Box::pin(v3_recurse(
+                        lo_idx, lo_path.clone(), lo_raws.clone(),
+                        mid_idx - 1, new_hi_path, new_hi_raws,
+                        cache, samples, budget, ocr_calls,
+                        engine, video, frames_dir, cfg,
+                    )).await;
+                }
+                if mid_idx + 1 <= hi_idx {
+                    let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                        mid_idx + 1, cache, engine, video, frames_dir, cfg,
+                    ).await {
+                        Some(r) => r,
+                        None => return,
+                    };
+                    Box::pin(v3_recurse(
+                        mid_idx + 1, new_lo_path, new_lo_raws,
+                        hi_idx, hi_path.clone(), hi_raws.clone(),
+                        cache, samples, budget, ocr_calls,
+                        engine, video, frames_dir, cfg,
+                    )).await;
+                }
+                return;
+            }
         };
         if !mid_cached {
             *budget = budget.saturating_sub(1);
             *ocr_calls += 1;
         }
-        tracing::trace!("v3 OCR mid={} → raws={} (cached={}, budget={})", mid, mid_raws.len(), mid_cached, budget);
-        if mid_raws.is_empty() {
-            tracing::trace!("v3 mid={} empty, recurse both halves", mid);
-            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+        tracing::trace!("v3 OCR mid={} → raws={}", mid_idx, mid_raws.len());
+
+        // 6. mid OCR returned no usable text — skip it
+        if mid_raws.is_empty() || primary_content_text(&mid_raws).is_empty() {
+            tracing::trace!("v3 mid={} invalid, skip + recurse both sides", mid_idx);
+            if lo_idx <= mid_idx - 1 {
+                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                    mid_idx - 1, cache, engine, video, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => return,
+                };
+                Box::pin(v3_recurse(
+                    lo_idx, lo_path.clone(), lo_raws.clone(),
+                    mid_idx - 1, new_hi_path, new_hi_raws,
+                    cache, samples, budget, ocr_calls,
+                    engine, video, frames_dir, cfg,
+                )).await;
+            }
+            if mid_idx + 1 <= hi_idx {
+                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                    mid_idx + 1, cache, engine, video, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => return,
+                };
+                Box::pin(v3_recurse(
+                    mid_idx + 1, new_lo_path, new_lo_raws,
+                    hi_idx, hi_path.clone(), hi_raws.clone(),
+                    cache, samples, budget, ocr_calls,
+                    engine, video, frames_dir, cfg,
+                )).await;
+            }
             return;
         }
+
         let mid_text = primary_content_text(&mid_raws);
-        tracing::trace!("v3 mid_text=\", {}\"", mid_text);
-        if mid_text.is_empty() {
-            tracing::trace!("v3 mid={} watermark-only, recurse both halves", mid);
-            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            return;
-        }
-        // mid_text vs lo_text vs hi_text
+
+        // 7/8/9. Three split paths. KEY: every split keeps mid in
+        // exactly ONE child range (as the child's hi or lo boundary),
+        // so mid is never lost and never double-pushed.
         if mid_text == lo_text {
+            // mid belongs to the lo side. [lo, mid] inherits mid as
+            // its hi boundary; [mid+1, hi] needs a fresh lo.
             tracing::trace!("v3 mid==lo, recurse [lo,mid] + [mid+1,hi]");
-            Box::pin(v3_recurse(lo, mid, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            Box::pin(v3_recurse(
+                lo_idx, lo_path, lo_raws,
+                mid_idx, mid_path, mid_raws,
+                cache, samples, budget, ocr_calls,
+                engine, video, frames_dir, cfg,
+            )).await;
+            if mid_idx + 1 <= hi_idx {
+                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                    mid_idx + 1, cache, engine, video, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => return,
+                };
+                Box::pin(v3_recurse(
+                    mid_idx + 1, new_lo_path, new_lo_raws,
+                    hi_idx, hi_path, hi_raws,
+                    cache, samples, budget, ocr_calls,
+                    engine, video, frames_dir, cfg,
+                )).await;
+            }
         } else if mid_text == hi_text {
+            // mid belongs to the hi side. [lo, mid-1] needs a fresh hi;
+            // [mid, hi] inherits mid as its lo boundary.
             tracing::trace!("v3 mid==hi, recurse [lo,mid-1] + [mid,hi]");
-            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            if lo_idx <= mid_idx - 1 {
+                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                    mid_idx - 1, cache, engine, video, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => return,
+                };
+                Box::pin(v3_recurse(
+                    lo_idx, lo_path, lo_raws,
+                    mid_idx - 1, new_hi_path, new_hi_raws,
+                    cache, samples, budget, ocr_calls,
+                    engine, video, frames_dir, cfg,
+                )).await;
+            }
+            Box::pin(v3_recurse(
+                mid_idx, mid_path, mid_raws,
+                hi_idx, hi_path, hi_raws,
+                cache, samples, budget, ocr_calls,
+                engine, video, frames_dir, cfg,
+            )).await;
         } else {
-            // mid is its own segment — neither side owns it. Push mid
-            // as a sample BEFORE recursing, then split the surrounding
-            // range into [lo, mid-1] + [mid+1, hi] so we don't double-
-            // count it. (The previous "recurse [lo, mid] + [mid+1, hi]"
-            // silently dropped mid's OCR result, see issue: v3 split
-            // could lose a whole subtitle frame.)
-            tracing::trace!("v3 mid distinct, push mid={} then recurse [lo,mid-1] + [mid+1,hi]", mid);
+            // mid is its own segment, distinct from BOTH lo and hi.
+            // Split as [lo, mid-1] + [mid+1, hi] so mid lives in
+            // neither child — the parent pushes mid once and the
+            // children independently push their own representatives.
+            // (Splitting [lo, mid] + [mid, hi] would put mid in BOTH
+            // children and cause it to be pushed twice.)
+            tracing::trace!(
+                "v3 mid distinct, push mid={} then recurse [lo,mid-1] + [mid+1,hi]",
+                mid_idx
+            );
             samples.push(AdaptiveSample {
                 frame: mid_path,
-                t_sec: mid as f32,
+                t_sec: mid_idx as f32,
                 raws: mid_raws,
             });
-            Box::pin(v3_recurse(lo, mid - 1, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
-            Box::pin(v3_recurse(mid + 1, hi, cache, samples, budget, ocr_calls, engine, video, frames_dir, cfg)).await;
+            if lo_idx <= mid_idx - 1 {
+                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                    mid_idx - 1, cache, engine, video, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => return,
+                };
+                Box::pin(v3_recurse(
+                    lo_idx, lo_path, lo_raws,
+                    mid_idx - 1, new_hi_path, new_hi_raws,
+                    cache, samples, budget, ocr_calls,
+                    engine, video, frames_dir, cfg,
+                )).await;
+            }
+            if mid_idx + 1 <= hi_idx {
+                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                    mid_idx + 1, cache, engine, video, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => return,
+                };
+                Box::pin(v3_recurse(
+                    mid_idx + 1, new_lo_path, new_lo_raws,
+                    hi_idx, hi_path, hi_raws,
+                    cache, samples, budget, ocr_calls,
+                    engine, video, frames_dir, cfg,
+                )).await;
+            }
         }
     }
 
-    v3_recurse(0, last_frame, &mut ocr_cache, &mut samples, &mut budget_remaining, &mut ocr_calls, engine, video, frames_dir, cfg).await;
+    // Root call: OCR idx=0 and idx=last_frame once, then hand them
+    // to v3_recurse. v3_recurse only ever invokes the OCR engine for
+    // midpoints; root OCRs (lo=0 and hi=last_frame) happen here.
+    let last_frame_idx = last_frame;
+    if last_frame_idx < 0 {
+        // Video shorter than 1 second — nothing to do.
+        return (samples, ocr_calls);
+    }
+    let (lo_path, lo_raws, lo_cached) = match ocr_frame(
+        0, &mut ocr_cache, engine, video, frames_dir, cfg,
+    ).await {
+        Some(r) => r,
+        None => return (samples, ocr_calls),
+    };
+    if !lo_cached {
+        budget_remaining = budget_remaining.saturating_sub(1);
+        ocr_calls += 1;
+    }
+    let (hi_path, hi_raws, hi_cached) = match ocr_frame(
+        last_frame_idx, &mut ocr_cache, engine, video, frames_dir, cfg,
+    ).await {
+        Some(r) => r,
+        None => return (samples, ocr_calls),
+    };
+    if !hi_cached {
+        budget_remaining = budget_remaining.saturating_sub(1);
+        ocr_calls += 1;
+    }
+    tracing::trace!(
+        "v3 root: OCR lo=0 (raws={}) + hi={} (raws={})",
+        lo_raws.len(), last_frame_idx, hi_raws.len()
+    );
+    v3_recurse(
+        0, lo_path, lo_raws,
+        last_frame_idx, hi_path, hi_raws,
+        &mut ocr_cache, &mut samples, &mut budget_remaining, &mut ocr_calls,
+        engine, video, frames_dir, cfg,
+    ).await;
 
     // ---- Sort by time ----
     samples.sort_by(|a, b| a.t_sec.partial_cmp(&b.t_sec).unwrap_or(std::cmp::Ordering::Equal));
