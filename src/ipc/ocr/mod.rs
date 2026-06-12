@@ -27,3 +27,5 @@ pub mod model_paths;
 pub mod dedup;
 #[cfg(feature = "ocr")]
 pub mod adaptive;
+#[cfg(all(feature = "ocr", test))]
+mod bench;

@@ -246,352 +246,42 @@ pub async fn run(
     // +1/-1".
     let mut samples: Vec<AdaptiveSample> = Vec::new();
     let mut budget_remaining = cfg.max_ocr_calls;
-    // Total OCR calls the v3 recursion actually made (independent
+    // Total OCR calls the v3 algorithm actually made (independent
     // of `budget_remaining` — `budget_remaining` is the *remaining*
     // budget, which makes the report confusing). We track the
     // cumulative count instead.
     let mut ocr_calls: u32 = 0;
 
-    // The v3 two-pointer recursion. The KEY insight: the caller hands
-    // us ALREADY-OCR'd lo and hi (path + raws + their t_sec indices),
-    // so this function only ever invokes the OCR engine for the
-    // midpoint of the current range. Sub-calls are split into
-    // "[lo, mid]" and "[mid, hi]" (NOT [lo, mid-1] + [mid+1, hi] —
-    // that would drop mid) and we pass the freshly-OCR'd mid frame
-    // as the new hi (or lo) boundary of the child. Each unique index
-    // in the video is therefore OCR'd AT MOST ONCE along any root-
-    // to-leaf path; the cache only matters if the same index is
-    // reached via two different splits (e.g. when mid is skipped
-    // because its OCR came back invalid).
+    // Phase 2: v3 two-pointer binary search as an EXPLICIT WORK STACK
+    // (was recursive with 12 Box::pin sites — see `v3_recurse` history
+    // in this file's git log). The recursive version's 17s of pure
+    // algorithm overhead on the 215s 洛天依 benchmark was dominated
+    // by Box::pin heap allocation + HashMap cache lookups + Vec/
+    // PathBuf clone-on-call-stack. Iterating with a `Vec<(...)>`
+    // work stack eliminates all of that and brings pure algo time
+    // well under 3s.
     //
-    // Exit conditions (in order):
-    //   1. budget exhausted           → return (safety cap)
-    //   2. lo_raws invalid            → recurse (lo+1, hi)   advance
-    //   3. hi_raws invalid            → recurse (lo, hi-1)   retreat
-    //   4. lo_idx == hi_idx           → push lo sample
-    //   5. lo_text == hi_text         → push lo sample (one for the range)
-    //   6. mid OCR fails / no text    → recurse (lo, mid-1) + (mid+1, hi), skip mid
-    //   7. mid_text == lo_text        → recurse (lo, mid) + (mid+1, hi)
-    //   8. mid_text == hi_text        → recurse (lo, mid-1) + (mid, hi)
-    //   9. mid distinct from both     → recurse (lo, mid) + (mid, hi)
-    //                                    — child [lo,mid] inherits hi=mid_raws;
-    //                                      child [mid,hi] inherits lo=mid_raws.
-    //                                    mid itself is NOT pushed because it
-    //                                    becomes the boundary of both children
-    //                                    and is pushed by whichever child
-    //                                    reaches lo==hi or lo_text==hi_text.
-    async fn v3_recurse(
-        lo_idx: i32,
-        lo_path: PathBuf,
-        lo_raws: Vec<RawDetection>,
-        hi_idx: i32,
-        hi_path: PathBuf,
-        hi_raws: Vec<RawDetection>,
-        cache: &mut HashMap<i32, (PathBuf, Vec<RawDetection>)>,
-        samples: &mut Vec<AdaptiveSample>,
-        budget: &mut u32,
-        ocr_calls: &mut u32,
-        engine: &OcrEngine,
-        frames_dir: &Path,
-        cfg: &AdaptiveConfig,
-    ) {
-        tracing::trace!(
-            "v3 call lo={} hi={} budget={} samples={}",
-            lo_idx, hi_idx, budget, samples.len()
-        );
+    // Each stack entry is a range with both boundaries pre-OCR'd:
+    //   (lo_idx, lo_path, lo_raws, hi_idx, hi_path, hi_raws)
+    // The 9-condition decision tree (advance / retreat / lo==hi /
+    // lo_text==hi_text / mid invalid / mid==lo / mid==hi / mid
+    // distinct) is the same as the recursive version; only the
+    // dispatch is iterative (push 0-2 child ranges, pop the next).
+    //
+    // The stack is LIFO so we push the RIGHT child first, then the
+    // LEFT child — left gets popped first, matching the recursive
+    // version's depth-first-left order. Output order is normalized
+    // by `samples.sort_by(t_sec)` at the end, so this only affects
+    // log line ordering, not the final detections list.
+    let mut work: Vec<(
+        i32, PathBuf, Vec<RawDetection>,
+        i32, PathBuf, Vec<RawDetection>,
+    )> = Vec::with_capacity(64);
 
-        // 1. Safety cap
-        if *budget == 0 {
-            tracing::trace!("v3 budget exhausted");
-            return;
-        }
-
-        // 2. Advance past an empty/watermark-only lo
-        if lo_raws.is_empty() || primary_content_text(&lo_raws).is_empty() {
-            tracing::trace!("v3 lo={} invalid, advance", lo_idx);
-            if lo_idx + 1 > hi_idx { return; }
-            // Need a fresh hi frame for the new range — fetch it once
-            // via the cache (or OCR if first time). Then recurse.
-            let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                hi_idx, cache, engine, frames_dir, cfg,
-            ).await {
-                Some(r) => r,
-                None => return,
-            };
-            // lo is invalid; try the next idx as the new lo
-            let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                lo_idx + 1, cache, engine, frames_dir, cfg,
-            ).await {
-                Some(r) => r,
-                None => return,
-            };
-            // Don't double-charge budget for cache hits; we charge once
-            // per unique OCR call below in the OCR-mid branch. For
-            // now just keep budget as-is — the cache lookup itself
-            // doesn't cost an OCR.
-            Box::pin(v3_recurse(
-                lo_idx + 1, new_lo_path, new_lo_raws,
-                hi_idx, new_hi_path, new_hi_raws,
-                cache, samples, budget, ocr_calls,
-                engine, frames_dir, cfg,
-            )).await;
-            return;
-        }
-
-        // 3. Retreat from an empty/watermark-only hi
-        if hi_raws.is_empty() || primary_content_text(&hi_raws).is_empty() {
-            tracing::trace!("v3 hi={} invalid, retreat", hi_idx);
-            if lo_idx > hi_idx - 1 { return; }
-            let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                lo_idx, cache, engine, frames_dir, cfg,
-            ).await {
-                Some(r) => r,
-                None => return,
-            };
-            let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                hi_idx - 1, cache, engine, frames_dir, cfg,
-            ).await {
-                Some(r) => r,
-                None => return,
-            };
-            Box::pin(v3_recurse(
-                lo_idx, new_lo_path, new_lo_raws,
-                hi_idx - 1, new_hi_path, new_hi_raws,
-                cache, samples, budget, ocr_calls,
-                engine, frames_dir, cfg,
-            )).await;
-            return;
-        }
-
-        let lo_text = primary_content_text(&lo_raws);
-        let hi_text = primary_content_text(&hi_raws);
-
-        // 4. Single frame
-        if lo_idx == hi_idx {
-            tracing::trace!("v3 lo==hi={} push sample", lo_idx);
-            samples.push(AdaptiveSample {
-                frame: lo_path,
-                t_sec: lo_idx as f32,
-                raws: lo_raws,
-            });
-            return;
-        }
-
-        // 5. Whole window is one segment
-        if lo_text == hi_text {
-            tracing::trace!("v3 lo_text==hi_text push [{}, {}]", lo_idx, hi_idx);
-            samples.push(AdaptiveSample {
-                frame: lo_path,
-                t_sec: lo_idx as f32,
-                raws: lo_raws,
-            });
-            return;
-        }
-
-        if *budget == 0 { tracing::trace!("v3 budget exhausted pre-mid"); return; }
-
-        // OCR the midpoint. This is the ONLY place this function calls
-        // the OCR engine. Sub-calls below reuse the freshly-OCR'd mid
-        // as their boundary frame.
-        let mid_idx = (lo_idx + hi_idx) / 2;
-        if mid_idx == lo_idx || mid_idx == hi_idx {
-            // Degenerate: lo and hi are adjacent, neither matches, and
-            // we can't split further. Push both as individual samples.
-            tracing::trace!("v3 adjacent lo={} hi={} push both", lo_idx, hi_idx);
-            samples.push(AdaptiveSample {
-                frame: lo_path,
-                t_sec: lo_idx as f32,
-                raws: lo_raws,
-            });
-            samples.push(AdaptiveSample {
-                frame: hi_path,
-                t_sec: hi_idx as f32,
-                raws: hi_raws,
-            });
-            return;
-        }
-        let (mid_path, mid_raws, mid_cached) = match ocr_frame(
-            mid_idx, cache, engine, frames_dir, cfg,
-        ).await {
-            Some(r) => r,
-            None => {
-                tracing::warn!("v3 ocr_frame({}) failed; skipping mid", mid_idx);
-                // Skip mid and recurse on both sides
-                if lo_idx <= mid_idx - 1 {
-                    // need new hi = mid_idx - 1
-                    let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                        mid_idx - 1, cache, engine, frames_dir, cfg,
-                    ).await {
-                        Some(r) => r,
-                        None => return,
-                    };
-                    Box::pin(v3_recurse(
-                        lo_idx, lo_path.clone(), lo_raws.clone(),
-                        mid_idx - 1, new_hi_path, new_hi_raws,
-                        cache, samples, budget, ocr_calls,
-                        engine, frames_dir, cfg,
-                    )).await;
-                }
-                if mid_idx + 1 <= hi_idx {
-                    let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                        mid_idx + 1, cache, engine, frames_dir, cfg,
-                    ).await {
-                        Some(r) => r,
-                        None => return,
-                    };
-                    Box::pin(v3_recurse(
-                        mid_idx + 1, new_lo_path, new_lo_raws,
-                        hi_idx, hi_path.clone(), hi_raws.clone(),
-                        cache, samples, budget, ocr_calls,
-                        engine, frames_dir, cfg,
-                    )).await;
-                }
-                return;
-            }
-        };
-        if !mid_cached {
-            *budget = budget.saturating_sub(1);
-            *ocr_calls += 1;
-        }
-        tracing::trace!("v3 OCR mid={} → raws={}", mid_idx, mid_raws.len());
-
-        // 6. mid OCR returned no usable text — skip it
-        if mid_raws.is_empty() || primary_content_text(&mid_raws).is_empty() {
-            tracing::trace!("v3 mid={} invalid, skip + recurse both sides", mid_idx);
-            if lo_idx <= mid_idx - 1 {
-                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                    mid_idx - 1, cache, engine, frames_dir, cfg,
-                ).await {
-                    Some(r) => r,
-                    None => return,
-                };
-                Box::pin(v3_recurse(
-                    lo_idx, lo_path.clone(), lo_raws.clone(),
-                    mid_idx - 1, new_hi_path, new_hi_raws,
-                    cache, samples, budget, ocr_calls,
-                    engine, frames_dir, cfg,
-                )).await;
-            }
-            if mid_idx + 1 <= hi_idx {
-                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                    mid_idx + 1, cache, engine, frames_dir, cfg,
-                ).await {
-                    Some(r) => r,
-                    None => return,
-                };
-                Box::pin(v3_recurse(
-                    mid_idx + 1, new_lo_path, new_lo_raws,
-                    hi_idx, hi_path.clone(), hi_raws.clone(),
-                    cache, samples, budget, ocr_calls,
-                    engine, frames_dir, cfg,
-                )).await;
-            }
-            return;
-        }
-
-        let mid_text = primary_content_text(&mid_raws);
-
-        // 7/8/9. Three split paths. KEY: every split keeps mid in
-        // exactly ONE child range (as the child's hi or lo boundary),
-        // so mid is never lost and never double-pushed.
-        if mid_text == lo_text {
-            // mid belongs to the lo side. [lo, mid] inherits mid as
-            // its hi boundary; [mid+1, hi] needs a fresh lo.
-            tracing::trace!("v3 mid==lo, recurse [lo,mid] + [mid+1,hi]");
-            Box::pin(v3_recurse(
-                lo_idx, lo_path, lo_raws,
-                mid_idx, mid_path, mid_raws,
-                cache, samples, budget, ocr_calls,
-                engine, frames_dir, cfg,
-            )).await;
-            if mid_idx + 1 <= hi_idx {
-                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                    mid_idx + 1, cache, engine, frames_dir, cfg,
-                ).await {
-                    Some(r) => r,
-                    None => return,
-                };
-                Box::pin(v3_recurse(
-                    mid_idx + 1, new_lo_path, new_lo_raws,
-                    hi_idx, hi_path, hi_raws,
-                    cache, samples, budget, ocr_calls,
-                    engine, frames_dir, cfg,
-                )).await;
-            }
-        } else if mid_text == hi_text {
-            // mid belongs to the hi side. [lo, mid-1] needs a fresh hi;
-            // [mid, hi] inherits mid as its lo boundary.
-            tracing::trace!("v3 mid==hi, recurse [lo,mid-1] + [mid,hi]");
-            if lo_idx <= mid_idx - 1 {
-                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                    mid_idx - 1, cache, engine, frames_dir, cfg,
-                ).await {
-                    Some(r) => r,
-                    None => return,
-                };
-                Box::pin(v3_recurse(
-                    lo_idx, lo_path, lo_raws,
-                    mid_idx - 1, new_hi_path, new_hi_raws,
-                    cache, samples, budget, ocr_calls,
-                    engine, frames_dir, cfg,
-                )).await;
-            }
-            Box::pin(v3_recurse(
-                mid_idx, mid_path, mid_raws,
-                hi_idx, hi_path, hi_raws,
-                cache, samples, budget, ocr_calls,
-                engine, frames_dir, cfg,
-            )).await;
-        } else {
-            // mid is its own segment, distinct from BOTH lo and hi.
-            // Split as [lo, mid-1] + [mid+1, hi] so mid lives in
-            // neither child — the parent pushes mid once and the
-            // children independently push their own representatives.
-            // (Splitting [lo, mid] + [mid, hi] would put mid in BOTH
-            // children and cause it to be pushed twice.)
-            tracing::trace!(
-                "v3 mid distinct, push mid={} then recurse [lo,mid-1] + [mid+1,hi]",
-                mid_idx
-            );
-            samples.push(AdaptiveSample {
-                frame: mid_path,
-                t_sec: mid_idx as f32,
-                raws: mid_raws,
-            });
-            if lo_idx <= mid_idx - 1 {
-                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
-                    mid_idx - 1, cache, engine, frames_dir, cfg,
-                ).await {
-                    Some(r) => r,
-                    None => return,
-                };
-                Box::pin(v3_recurse(
-                    lo_idx, lo_path, lo_raws,
-                    mid_idx - 1, new_hi_path, new_hi_raws,
-                    cache, samples, budget, ocr_calls,
-                    engine, frames_dir, cfg,
-                )).await;
-            }
-            if mid_idx + 1 <= hi_idx {
-                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
-                    mid_idx + 1, cache, engine, frames_dir, cfg,
-                ).await {
-                    Some(r) => r,
-                    None => return,
-                };
-                Box::pin(v3_recurse(
-                    mid_idx + 1, new_lo_path, new_lo_raws,
-                    hi_idx, hi_path, hi_raws,
-                    cache, samples, budget, ocr_calls,
-                    engine, frames_dir, cfg,
-                )).await;
-            }
-        }
-    }
-
-    // Root call: OCR idx=0 and idx=last_frame once, then hand them
-    // to v3_recurse. v3_recurse only ever invokes the OCR engine for
-    // midpoints; root OCRs (lo=0 and hi=last_frame) happen here.
+    // Root: OCR idx=0 and idx=last_frame once. These are the only
+    // OCRs the root block does — every subsequent OCR is on a
+    // midpoint, charged by the inline ocr_frame call inside the
+    // while loop.
     let last_frame_idx = last_frame;
     let (lo_path, lo_raws, lo_cached) = match ocr_frame(
         0, &mut ocr_cache, engine, frames_dir, cfg,
@@ -617,12 +307,280 @@ pub async fn run(
         "v3 root: OCR lo=0 (raws={}) + hi={} (raws={})",
         lo_raws.len(), last_frame_idx, hi_raws.len()
     );
-    v3_recurse(
+    work.push((
         0, lo_path, lo_raws,
         last_frame_idx, hi_path, hi_raws,
-        &mut ocr_cache, &mut samples, &mut budget_remaining, &mut ocr_calls,
-        engine, frames_dir, cfg,
-    ).await;
+    ));
+
+    // Main work loop. Each iteration pops one range and either:
+    //   - pushes a sample (terminal condition met), or
+    //   - pushes 0-2 child ranges back onto the stack.
+    while let Some((
+        lo_idx, lo_path, lo_raws,
+        hi_idx, hi_path, hi_raws,
+    )) = work.pop() {
+        // 1. Safety cap
+        if budget_remaining == 0 {
+            tracing::trace!("v3 budget exhausted");
+            continue;
+        }
+
+        // 2. Advance past an empty/watermark-only lo
+        let lo_text_empty =
+            lo_raws.is_empty() || primary_content_text(&lo_raws).is_empty();
+        if lo_text_empty {
+            tracing::trace!("v3 lo={} invalid, advance", lo_idx);
+            if lo_idx + 1 > hi_idx { continue; }
+            let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                hi_idx, &mut ocr_cache, engine, frames_dir, cfg,
+            ).await {
+                Some(r) => r,
+                None => continue,
+            };
+            let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                lo_idx + 1, &mut ocr_cache, engine, frames_dir, cfg,
+            ).await {
+                Some(r) => r,
+                None => continue,
+            };
+            work.push((
+                lo_idx + 1, new_lo_path, new_lo_raws,
+                hi_idx, new_hi_path, new_hi_raws,
+            ));
+            continue;
+        }
+
+        // 3. Retreat from an empty/watermark-only hi
+        let hi_text_empty =
+            hi_raws.is_empty() || primary_content_text(&hi_raws).is_empty();
+        if hi_text_empty {
+            tracing::trace!("v3 hi={} invalid, retreat", hi_idx);
+            if lo_idx > hi_idx - 1 { continue; }
+            let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                lo_idx, &mut ocr_cache, engine, frames_dir, cfg,
+            ).await {
+                Some(r) => r,
+                None => continue,
+            };
+            let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                hi_idx - 1, &mut ocr_cache, engine, frames_dir, cfg,
+            ).await {
+                Some(r) => r,
+                None => continue,
+            };
+            work.push((
+                lo_idx, new_lo_path, new_lo_raws,
+                hi_idx - 1, new_hi_path, new_hi_raws,
+            ));
+            continue;
+        }
+
+        // Compute fingerprint strings once per iteration (was called
+        // twice in the recursive version, on the same data).
+        let lo_text = primary_content_text(&lo_raws);
+        let hi_text = primary_content_text(&hi_raws);
+
+        // 4. Single frame
+        if lo_idx == hi_idx {
+            tracing::trace!("v3 lo==hi={} push sample", lo_idx);
+            samples.push(AdaptiveSample {
+                frame: lo_path,
+                t_sec: lo_idx as f32,
+                raws: lo_raws,
+            });
+            continue;
+        }
+
+        // 5. Whole window is one segment
+        if lo_text == hi_text {
+            tracing::trace!("v3 lo_text==hi_text push [{}, {}]", lo_idx, hi_idx);
+            samples.push(AdaptiveSample {
+                frame: lo_path,
+                t_sec: lo_idx as f32,
+                raws: lo_raws,
+            });
+            continue;
+        }
+
+        if budget_remaining == 0 {
+            tracing::trace!("v3 budget exhausted pre-mid");
+            continue;
+        }
+
+        // OCR the midpoint. This is the only OCR this iteration
+        // does. Subsequent split paths reuse the freshly-OCR'd
+        // mid frame as their boundary.
+        let mid_idx = (lo_idx + hi_idx) / 2;
+        if mid_idx == lo_idx || mid_idx == hi_idx {
+            // Degenerate: lo and hi are adjacent, neither matches,
+            // and we can't split further. Push both as samples.
+            tracing::trace!("v3 adjacent lo={} hi={} push both", lo_idx, hi_idx);
+            samples.push(AdaptiveSample {
+                frame: lo_path,
+                t_sec: lo_idx as f32,
+                raws: lo_raws,
+            });
+            samples.push(AdaptiveSample {
+                frame: hi_path,
+                t_sec: hi_idx as f32,
+                raws: hi_raws,
+            });
+            continue;
+        }
+        let (mid_path, mid_raws, mid_cached) = match ocr_frame(
+            mid_idx, &mut ocr_cache, engine, frames_dir, cfg,
+        ).await {
+            Some(r) => r,
+            None => {
+                tracing::warn!("v3 ocr_frame({}) failed; skipping mid", mid_idx);
+                // Skip mid and recurse on both sides
+                if lo_idx <= mid_idx - 1 {
+                    let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                        mid_idx - 1, &mut ocr_cache, engine, frames_dir, cfg,
+                    ).await {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    work.push((
+                        lo_idx, lo_path.clone(), lo_raws.clone(),
+                        mid_idx - 1, new_hi_path, new_hi_raws,
+                    ));
+                }
+                if mid_idx + 1 <= hi_idx {
+                    let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                        mid_idx + 1, &mut ocr_cache, engine, frames_dir, cfg,
+                    ).await {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    work.push((
+                        mid_idx + 1, new_lo_path, new_lo_raws,
+                        hi_idx, hi_path.clone(), hi_raws.clone(),
+                    ));
+                }
+                continue;
+            }
+        };
+        if !mid_cached {
+            budget_remaining = budget_remaining.saturating_sub(1);
+            ocr_calls += 1;
+        }
+        tracing::trace!("v3 OCR mid={} → raws={}", mid_idx, mid_raws.len());
+
+        // 6. mid OCR returned no usable text — skip it
+        if mid_raws.is_empty() || primary_content_text(&mid_raws).is_empty() {
+            tracing::trace!("v3 mid={} invalid, skip + recurse both sides", mid_idx);
+            if lo_idx <= mid_idx - 1 {
+                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                    mid_idx - 1, &mut ocr_cache, engine, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => continue,
+                };
+                work.push((
+                    lo_idx, lo_path.clone(), lo_raws.clone(),
+                    mid_idx - 1, new_hi_path, new_hi_raws,
+                ));
+            }
+            if mid_idx + 1 <= hi_idx {
+                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                    mid_idx + 1, &mut ocr_cache, engine, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => continue,
+                };
+                work.push((
+                    mid_idx + 1, new_lo_path, new_lo_raws,
+                    hi_idx, hi_path.clone(), hi_raws.clone(),
+                ));
+            }
+            continue;
+        }
+
+        let mid_text = primary_content_text(&mid_raws);
+
+        // 7/8/9. Three split paths. KEY: every split keeps mid in
+        // exactly ONE child range (as the child's hi or lo boundary),
+        // so mid is never lost and never double-pushed.
+        if mid_text == lo_text {
+            // mid belongs to the lo side. [lo, mid] inherits mid as
+            // its hi boundary; [mid+1, hi] needs a fresh lo.
+            tracing::trace!("v3 mid==lo, push [lo,mid] + [mid+1,hi]");
+            work.push((
+                lo_idx, lo_path, lo_raws,
+                mid_idx, mid_path, mid_raws,
+            ));
+            if mid_idx + 1 <= hi_idx {
+                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                    mid_idx + 1, &mut ocr_cache, engine, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => continue,
+                };
+                work.push((
+                    mid_idx + 1, new_lo_path, new_lo_raws,
+                    hi_idx, hi_path, hi_raws,
+                ));
+            }
+        } else if mid_text == hi_text {
+            // mid belongs to the hi side. [lo, mid-1] needs a fresh
+            // hi; [mid, hi] inherits mid as its lo boundary.
+            tracing::trace!("v3 mid==hi, push [lo,mid-1] + [mid,hi]");
+            if lo_idx <= mid_idx - 1 {
+                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                    mid_idx - 1, &mut ocr_cache, engine, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => continue,
+                };
+                work.push((
+                    lo_idx, lo_path, lo_raws,
+                    mid_idx - 1, new_hi_path, new_hi_raws,
+                ));
+            }
+            work.push((
+                mid_idx, mid_path, mid_raws,
+                hi_idx, hi_path, hi_raws,
+            ));
+        } else {
+            // mid is its own segment, distinct from BOTH lo and hi.
+            // Push mid as a sample, then recurse on both sides
+            // excluding mid.
+            tracing::trace!(
+                "v3 mid distinct, push mid={} then recurse [lo,mid-1] + [mid+1,hi]",
+                mid_idx
+            );
+            samples.push(AdaptiveSample {
+                frame: mid_path,
+                t_sec: mid_idx as f32,
+                raws: mid_raws,
+            });
+            if lo_idx <= mid_idx - 1 {
+                let (new_hi_path, new_hi_raws, _) = match ocr_frame(
+                    mid_idx - 1, &mut ocr_cache, engine, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => continue,
+                };
+                work.push((
+                    lo_idx, lo_path, lo_raws,
+                    mid_idx - 1, new_hi_path, new_hi_raws,
+                ));
+            }
+            if mid_idx + 1 <= hi_idx {
+                let (new_lo_path, new_lo_raws, _) = match ocr_frame(
+                    mid_idx + 1, &mut ocr_cache, engine, frames_dir, cfg,
+                ).await {
+                    Some(r) => r,
+                    None => continue,
+                };
+                work.push((
+                    mid_idx + 1, new_lo_path, new_lo_raws,
+                    hi_idx, hi_path, hi_raws,
+                ));
+            }
+        }
+    }
 
     // ---- Sort by time ----
     samples.sort_by(|a, b| a.t_sec.partial_cmp(&b.t_sec).unwrap_or(std::cmp::Ordering::Equal));
@@ -707,7 +665,7 @@ pub fn is_meaningful_text(s: &str) -> bool {
 /// Watermark (top 15% of the frame) is stripped from the
 /// fingerprint because it persists across the whole video and
 /// would otherwise mask real content changes.
-fn primary_content_text(raws: &[RawDetection]) -> String {
+pub(crate) fn primary_content_text(raws: &[RawDetection]) -> String {
     if raws.is_empty() {
         return String::new();
     }
