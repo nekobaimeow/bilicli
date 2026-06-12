@@ -91,7 +91,22 @@ pub struct DanmakuResult {
 /// 拉取实时弹幕 XML
 async fn fetch_live_xml(cid: i64) -> Result<Vec<u8>> {
     let url = format!("https://comment.bilibili.com/{cid}.xml");
-    let client = init_client().await.map_err(|e| CliError::Other(e.to_string()))?;
+    // 重要：B 站 comment.bilibili.com 接口自 2024 年起返回 raw deflate 压缩流
+    // （无 zlib/gzip header，也无 Content-Encoding 头）。reqwest 0.12 的全局
+    // builder 在 backends/http.rs 里 `.gzip(true).deflate(true)`，reqwest 会
+    // 嗅探响应 Content-Type=text/xml 错误地把流丢进透明解码器，触发
+    // "error decoding response body"。Accept-Encoding: identity 也不能阻止
+    // 已启用的透明解码。这里建一个专用 client，gzip/deflate 都关掉，拿到
+    // 原始字节后我们自己 raw deflate 解压。
+    let client = reqwest::Client::builder()
+        .user_agent(crate::ipc::shared::USER_AGENT)
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .cookie_store(true)
+        .gzip(false)
+        .deflate(false)
+        .build()
+        .map_err(|e| CliError::Other(format!("danmaku client build: {e}")))?;
     let resp = client.get(&url).send().await.map_err(CliError::from)?;
     if !resp.status().is_success() {
         return Err(CliError::Http {
@@ -99,7 +114,40 @@ async fn fetch_live_xml(cid: i64) -> Result<Vec<u8>> {
             message: format!("live danmaku http for cid={cid}"),
         });
     }
-    resp.bytes().await.map(|b| b.to_vec()).map_err(CliError::from)
+    let raw = resp.bytes().await.map(|b| b.to_vec()).map_err(CliError::from)?;
+    // 先尝试 raw deflate 解压（无 header），失败则按明文 XML 处理
+    match decode_danmaku_body(&raw) {
+        Ok(decoded) => Ok(decoded),
+        Err(_) if looks_like_xml(&raw) => Ok(raw),
+        Err(e) => Err(CliError::Other(format!(
+            "live danmaku decode failed for cid={cid}: {e}"
+        ))),
+    }
+}
+
+/// 把 B 站 comment.bilibili.com 的响应体解码成 XML 字节。
+///
+/// 自 2024 年起 B 站对该接口启用 raw deflate 压缩（无 zlib/gzip header，
+/// 也不带 Content-Encoding 头），reqwest 不会自动解压，调用方需要手动 inflate。
+/// 失败时把原始字节原样回传，让调用方再判断。
+fn decode_danmaku_body(bytes: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    use flate2::read::DeflateDecoder;
+    use std::io::Read;
+    let mut decoder = DeflateDecoder::new(bytes); // raw deflate (no header) by default
+    let mut out = Vec::with_capacity(bytes.len() * 3);
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| format!("raw deflate inflate failed: {e}"))?;
+    if out.is_empty() {
+        return Err("decoded to empty buffer".into());
+    }
+    Ok(out)
+}
+
+fn looks_like_xml(bytes: &[u8]) -> bool {
+    let head: &[u8] = if bytes.len() > 64 { &bytes[..64] } else { bytes };
+    let s = String::from_utf8_lossy(head);
+    s.contains("<?xml") || s.contains("<i>")
 }
 
 /// 解析 `<d p="time,type,size,color,date,pool,user,id">text</d>` 计数
@@ -218,7 +266,15 @@ struct ViewData {
 pub async fn fetch_view(bvid: &str) -> Result<ViewData> {
     let url = format!("https://api.bilibili.com/x/web-interface/view?bvid={bvid}");
     let client = init_client().await.map_err(|e| CliError::Other(e.to_string()))?;
-    let resp = client.get(&url).send().await.map_err(CliError::from)?;
+    // B 站 view 接口同样会触发 reqwest 透明解压的 "error decoding response body"
+    // 错误（chunked + mixed Content-Encoding），与 search.rs 同因。强制 identity
+    // 让 reqwest 不自动解压，原始 JSON 字节直接交给我们。
+    let resp = client
+        .get(&url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+        .map_err(CliError::from)?;
     if !resp.status().is_success() {
         return Err(CliError::Http {
             status: resp.status().as_u16(),

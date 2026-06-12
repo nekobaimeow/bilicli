@@ -56,6 +56,9 @@ sha2 = "0.10"
 md-5 = "0.10"
 base64 = "0.22"
 
+# Compression (B 站 comment.bilibili.com now returns raw deflate instead of XML)
+flate2 = "1"
+
 # Random
 rand = "0.9"
 

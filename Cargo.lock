@@ -181,6 +181,7 @@ dependencies = [
  "comfy-table",
  "cron",
  "directories",
+ "flate2",
  "hmac",
  "image",
  "indicatif",

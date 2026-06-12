@@ -547,6 +547,20 @@ call those tools directly on the `.m4a` output.
    always appended for uniqueness: `{slug}-{cid}.m4a`. Long Chinese titles can produce
    a wall of underscores — use `--json` to get the original title in the response.
 
+7a. **`danmaku` fetches `comment.bilibili.com/<cid>.xml`, which since ~2024 returns
+   raw deflate (no zlib/gzip header, no Content-Encoding header) instead of plain
+   XML.** reqwest's global `Client` builder enables `.gzip(true).deflate(true)` for
+   transparent decoding; on this URL it mis-fires on the Content-Type=text/xml
+   response and surfaces as `error decoding response body`. `Accept-Encoding:
+   identity` does NOT prevent the transparent decode (it only affects what the
+   server sends). The CLI now builds a dedicated, gzip/deflate-disabled reqwest
+   client for the danmaku URL and manually raw-deflate-decodes the body. **Same fix
+   pattern was already needed for `view` (search.rs) and `subtitle` headers
+   (search.rs) but the danmaku one was the only place that actually surfaced as a
+   user-visible error** — both other endpoints happen to be JSON, which reqwest
+   recovers from via the "looks like JSON" sniff. The XML body has no JSON sniff
+   fallback, so it died loudly.
+
 8. **`--transcribe` requires two opt-ins.** The bilitools binary must be built with
    `--features transcribe` AND the `sensevoice` Python CLI must be on PATH (or
    passed via `--sensevoice-cli`). See "Audio Transcription" above. bilitools
