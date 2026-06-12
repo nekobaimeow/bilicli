@@ -339,163 +339,234 @@ mod tests {
         }
     }
 
-    /// Simulate the v2 algorithm core (decide-only, no frame extraction).
-    /// Returns the list of (t_sec, text) pairs that the algorithm would
-    /// keep as independent detections.
+    /// v3 algorithm core: two-pointer binary-search with lazy OCR.
     ///
-    /// This is a pure function — we test the decision logic without
-    /// needing ffmpeg/ocr-rs. The real `run_v2` will be a wrapper that
-    /// calls this and performs the actual OCR.
+    /// The user described the algorithm as:
+    ///   - 1s-frame sampling is the information-complete baseline
+    ///   - Walk the frame array with two pointers (lo, hi) on the
+    ///     index axis (not the time axis)
+    ///   - If lo is invalid (noise / empty) → lo++
+    ///   - If hi is invalid → hi--
+    ///   - OCR the midpoint, compare with lo and hi
+    ///   - If mid matches lo OR hi → it's part of that side's segment;
+    ///     the OTHER half is independent → recurse into the other half
+    ///   - If mid matches NEITHER → both halves are independent, recurse
+    ///     into both
+    ///   - Stop when lo > hi (empty) or lo == hi (single element)
+    ///   - Stop when lo_text == hi_text: the whole window is one segment
+    ///     (the user's spec: "exit if ocr(left) == ocr(right)")
     ///
-    /// Algorithm (BFS + post-sort dedup-stop, the v2 form of the
-    /// user-described "split into two sub-tasks if left ≈ right, stop"):
+    /// Note on the "exit when lo_text == hi_text" rule: this is the
+    /// user's literal spec. It means A-B-A-B-A pattern gets merged
+    /// into one segment (lo=0=A, hi=4=A, exit early, drop the B's).
+    /// We accept this because:
+    ///   1. Real B 站 videos don't have alternating A-B-A-B-A at 1s
+    ///      resolution — chapter titles and subtitles are coherent
+    ///      blocks of 2-10 seconds.
+    ///   2. The 1s-frame baseline guarantees no information is lost
+    ///      during EXTRACTION; this algorithm only changes how we
+    ///      GROUP the results, and grouping A-B-A-B-A into "A with
+    ///      mid-text changes" still preserves the dominant A.
+    ///   3. Information completeness is best measured by the
+    ///      `merge_adjacent` post-pass below, not by the raw
+    ///      recursive output.
     ///
-    ///   work queue = [(0, duration)]   (FIFO)
-    ///   while work not empty AND calls < max:
-    ///     (lo, hi) = work.pop_front()
-    ///     if hi - lo < min_seg: continue
-    ///     t_mid = (lo + hi) / 2
-    ///     mid_text = ocr(mid)
-    ///     if noise: continue
-    ///     results.push((mid, mid_text))
-    ///     if mid - lo >= min_seg: work.push_back((lo, mid))
-    ///     if hi - mid >= min_seg: work.push_back((mid, hi))
-    ///
-    ///   # post: sort by time, then collapse adjacent identical text
-    ///   # (this is the "stop if left ≈ right" pass, applied to the
-    ///   # time-sorted sequence so it correctly pairs consecutive
-    ///   # frames in chronological order)
-    fn v2_decide(
+    /// Returns (lo_idx, hi_idx, text) triples, plus a parallel
+    /// `ocr_calls` counter (passed in by the caller as a Cell).
+    fn v3_decide(
         spec: &HashMap<i32, String>,
-        lo: f32,
-        hi: f32,
-        min_seg: f32,
-        max_calls: u32,
-    ) -> Vec<(f32, String)> {
-        let mut results: Vec<(f32, String)> = vec![];
-        let mut calls_made: u32 = 0;
-        let mut work: std::collections::VecDeque<(f32, f32)> = std::collections::VecDeque::new();
-        work.push_back((lo, hi));
+        lo: i32,
+        hi: i32,
+    ) -> Vec<(i32, i32, String)> {
+        // OCR cache: maps 1-second frame index → OCR text. Mutated as
+        // we recurse so we never OCR the same frame twice.
+        let mut cache: HashMap<i32, String> = HashMap::new();
+        let mut raw_ocr_calls: u32 = 0;
 
-        let ocr_at = |t: f32, spec: &HashMap<i32, String>| -> String {
-            let key = t.round() as i32;
-            spec.get(&key).cloned().unwrap_or_default()
-        };
+        // The actual recursion is a closure that captures the cache.
+        // We can't use a real closure because of the borrow on `cache`
+        // and `raw_ocr_calls`; we use a private helper function that
+        // returns both the segments and the updated call count.
+        let mut result = v3_recurse(spec, lo, hi, &mut cache, &mut raw_ocr_calls);
 
-        // Phase 1: BFS — split every range, OCR each mid. min_seg is
-        // the *minimum OCR step*; ranges smaller than min_seg would
-        // give us duplicate or near-duplicate OCR results, so we
-        // stop splitting there. We always OCR the mid of a range, and
-        // the very first iteration also OCRs the start so the leftmost
-        // frame isn't dropped (BFS recursing from (0, 1.75) only
-        // reaches mid=0.875, never 0 itself).
-        // Boundary OCR: always OCR t=lo once at the start
-        calls_made += 1;
-        let lo_text = ocr_at(lo, spec);
-        if !lo_text.is_empty() { results.push((lo, lo_text)); }
-        // Also OCR the endpoint (hi-eps) for symmetry
-        calls_made += 1;
-        let hi_text = ocr_at(hi, spec);
-        if !hi_text.is_empty() { results.push((hi, hi_text)); }
-
-        work.push_back((lo, hi));
-        while let Some((lo, hi)) = work.pop_front() {
-            if calls_made >= max_calls { break; }
-            if hi - lo <= min_seg { continue; }
-            let mid = (lo + hi) * 0.5;
-            calls_made += 1;
-            let mid_text = ocr_at(mid, spec);
-            if mid_text.is_empty() {
-                // Mid frame is empty — DON'T assume the whole range is
-                // text-free (a subtitle could be just outside the mid).
-                // Split into halves and recurse; if both halves are also
-                // empty, the recursion will terminate naturally.
-                if mid - lo > min_seg { work.push_back((lo, mid)); }
-                if hi - mid > min_seg { work.push_back((mid, hi)); }
-                continue;
-            }
-            results.push((mid, mid_text));
-            // Always push both halves if they exceed the min_seg floor.
-            // The "min_seg" check is the SPLIT decision, not the OCR
-            // decision — we already OCR the mid of [lo, hi], so we
-            // might as well recurse into the halves and OCR their mids
-            // too, even if a half is exactly min_seg wide.
-            if mid - lo >= min_seg { work.push_back((lo, mid)); }
-            if hi - mid >= min_seg { work.push_back((mid, hi)); }
-        }
-
-        // Phase 2: sort by time (BFS order isn't strictly time-sequential)
-        results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Phase 3: dedup-stop pass — collapse adjacent identical text
-        // into a single entry (the LAST occurrence, which is the
-        // representative time of the segment)
-        let mut deduped: Vec<(f32, String)> = vec![];
-        for (t, text) in results {
-            if let Some((_, prev)) = deduped.last_mut() {
-                if prev == &text {
-                    // Same text as previous; replace with later time
-                    // (more representative of "end of segment")
-                    *prev = text;
-                    // update time of last entry
-                    let last_idx = deduped.len() - 1;
-                    deduped[last_idx].0 = t;
+        // Post-pass: collapse adjacent same-text segments. (After the
+        // user's "exit when lo==hi" rule, a 5-frame "第二句" block
+        // can come back as (10, 12) + (13, 14) because the algorithm
+        // recursed through the midpoint 12 and split the 5-frame
+        // block into two halves. Merging them gives back the
+        // original segment.)
+        result.sort_by_key(|s| s.0);
+        let mut merged: Vec<(i32, i32, String)> = vec![];
+        for seg in result {
+            if let Some(last) = merged.last_mut() {
+                if last.2 == seg.2 {
+                    last.1 = seg.1;  // extend end
                     continue;
                 }
             }
-            deduped.push((t, text));
+            merged.push(seg);
         }
-        deduped
+        merged
+    }
+
+    /// Internal recursion helper. Returns segments; mutates the cache
+    /// and `calls` counter.
+    fn v3_recurse(
+        spec: &HashMap<i32, String>,
+        lo: i32,
+        hi: i32,
+        cache: &mut HashMap<i32, String>,
+        calls: &mut u32,
+    ) -> Vec<(i32, i32, String)> {
+        // Exit: empty range
+        if lo > hi { return vec![]; }
+
+        // OCR lo (and skip if invalid)
+        if !cache.contains_key(&lo) {
+            *calls += 1;
+            let key = lo;
+            cache.insert(key, spec.get(&key).cloned().unwrap_or_default());
+        }
+        let lo_text = cache[&lo].clone();
+        if lo_text.is_empty() {
+            return v3_recurse(spec, lo + 1, hi, cache, calls);
+        }
+
+        // OCR hi (and skip if invalid)
+        if !cache.contains_key(&hi) {
+            *calls += 1;
+            let key = hi;
+            cache.insert(key, spec.get(&key).cloned().unwrap_or_default());
+        }
+        let hi_text = cache[&hi].clone();
+        if hi_text.is_empty() {
+            return v3_recurse(spec, lo, hi - 1, cache, calls);
+        }
+
+        // Single element
+        if lo == hi {
+            return vec![(lo, hi, lo_text)];
+        }
+
+        // Exit: lo_text == hi_text → whole window is one segment
+        if lo_text == hi_text {
+            return vec![(lo, hi, lo_text)];
+        }
+
+        // OCR mid
+        let mid = (lo + hi) / 2;
+        if !cache.contains_key(&mid) {
+            *calls += 1;
+            let key = mid;
+            cache.insert(key, spec.get(&key).cloned().unwrap_or_default());
+        }
+        let mid_text = cache[&mid].clone();
+        if mid_text.is_empty() {
+            // Mid is empty; recurse both halves (skip the empty mid)
+            let left = v3_recurse(spec, lo, mid - 1, cache, calls);
+            let right = v3_recurse(spec, mid + 1, hi, cache, calls);
+            return merge_two(left, right);
+        }
+
+        // mid is valid. Compare with lo and hi.
+        if mid_text == lo_text {
+            // mid ∈ [lo, mid] segment; right half [mid+1, hi] is
+            // independent
+            let left = v3_recurse(spec, lo, mid, cache, calls);
+            let right = v3_recurse(spec, mid + 1, hi, cache, calls);
+            return merge_two(left, right);
+        } else if mid_text == hi_text {
+            // mid ∈ [mid, hi] segment; left half [lo, mid-1] is
+            // independent
+            let left = v3_recurse(spec, lo, mid - 1, cache, calls);
+            let right = v3_recurse(spec, mid, hi, cache, calls);
+            return merge_two(left, right);
+        } else {
+            // mid is independent from both; recurse both halves
+            let left = v3_recurse(spec, lo, mid, cache, calls);
+            let right = v3_recurse(spec, mid + 1, hi, cache, calls);
+            return merge_two(left, right);
+        }
+    }
+
+    /// Concat two sorted-by-start segment lists.
+    fn merge_two(
+        mut a: Vec<(i32, i32, String)>,
+        b: Vec<(i32, i32, String)>,
+    ) -> Vec<(i32, i32, String)> {
+        a.extend(b);
+        a
     }
 
     #[test]
-    fn v2_recognizes_all_56_segments_of_v6() {
+    fn v3_recognizes_all_56_segments_of_v6() {
         // Simulate v6: 56 different 1-second segments, each with a unique
         // title. Every text is different from its neighbors.
         let mut spec = HashMap::new();
         for i in 0..56 {
             spec.insert(i, format!("title_{}", i));
         }
-        let results = v2_decide(&spec, 0.0, 56.0, 1.0, 200);
-        // v2 must capture every one of the 56 unique segments
-        // (information completeness equivalent to 1s sampling)
+        let results = v3_decide(&spec, 0, 55);
+        // v3 worst-case: full 1s-frame sampling = 56 OCR calls, 56 segments
         assert_eq!(results.len(), 56,
-                   "v2 must capture all 56 unique segments, got {} (calls: text spec has 56 distinct)",
+                   "v3 must capture all 56 unique segments, got {} (spec has 56 distinct)",
                    results.len());
     }
 
     #[test]
-    fn v2_skips_redundant_watermark_frames() {
-        // Simulate a video where one title persists for 30 seconds:
-        // a watermark visible at every 1s frame.
+    fn v3_skips_redundant_watermark_frames() {
+        // 30 identical frames → algorithm exits at root with single
+        // segment (lo_text == hi_text, 2 OCR calls).
         let mut spec = HashMap::new();
         for i in 0..30 {
             spec.insert(i, "PERSISTENT_WATERMARK".to_string());
         }
-        let results = v2_decide(&spec, 0.0, 30.0, 1.0, 200);
-        // All 30 frames have IDENTICAL text → only 1 detection
+        let results = v3_decide(&spec, 0, 29);
         assert_eq!(results.len(), 1,
-                   "redundant watermark should collapse to 1 detection, got {}",
-                   results.len());
+                   "redundant watermark should collapse to 1 detection, got {} (results: {:?})",
+                   results.len(), results);
     }
 
     #[test]
-    fn v2_handles_sparse_subtitle_pattern() {
-        // Real-world subtitle timing: 5 seconds of subtitle, then 5
-        // seconds of silence, then a different subtitle for 5 seconds,
-        // etc. 30 seconds total, 3 distinct subtitle strings.
+    fn v3_handles_sparse_subtitle_pattern() {
+        // 5s subtitle + 5s silence + 5s subtitle + 5s silence + 5s subtitle
+        // → 3 distinct subtitle blocks.
         let mut spec = HashMap::new();
-        for i in 0..5 { spec.insert(i, "第一句".to_string()); }
-        // 5..10 is silence (no entry)
+        for i in 0..5  { spec.insert(i, "第一句".to_string()); }
         for i in 10..15 { spec.insert(i, "第二句".to_string()); }
-        // 15..20 silence
         for i in 20..25 { spec.insert(i, "第三句".to_string()); }
-        // 25..30 silence
+        // 5..10, 15..20, 25..30 are silence (no entry)
 
-        let results = v2_decide(&spec, 0.0, 30.0, 1.0, 200);
-        // Should capture all 3 distinct subtitles
+        let results = v3_decide(&spec, 0, 29);
         assert_eq!(results.len(), 3,
-                   "3 distinct subtitles expected, got {} (text: {:?})",
+                   "3 distinct subtitles expected, got {} (results: {:?})",
+                   results.len(), results);
+        // Verify segments are time-sorted
+        let mut prev_end = -1;
+        for (lo, hi, _) in &results {
+            assert!(*lo > prev_end, "segments not time-sorted: prev_end={} lo={}", prev_end, lo);
+            prev_end = *hi;
+        }
+    }
+
+    #[test]
+    fn v3_handles_dense_chapter_titles_v6_simulation() {
+        // v6 actual pattern: 5s chapter + 5s silence + 5s chapter + ...
+        // 6 chapters, 5s each, 5s gap between, total 60s.
+        let mut spec: HashMap<i32, String> = HashMap::new();
+        let chapters = [
+            "高考结束了", "学长学姐再回来", "高考冲刺",
+            "新教学楼", "月假", "现在食堂",
+        ];
+        for (i, title) in chapters.iter().enumerate() {
+            let start = (i * 10) as i32;
+            for j in 0..5 {
+                spec.insert(start + j as i32, title.to_string());
+            }
+        }
+        let results = v3_decide(&spec, 0, 59);
+        assert_eq!(results.len(), 6,
+                   "6 chapter titles expected, got {} (results: {:?})",
                    results.len(), results);
     }
 }
