@@ -86,7 +86,7 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<(), CliError> {
 /// synthesize `cheese:ss{N}` so the user can see at a glance that
 /// this is a course page (which is not directly downloadable via
 /// the BV-style playurl endpoint).
-fn render_id_column(r: &VideoResult) -> String {
+pub fn render_id_column(r: &VideoResult) -> String {
     match (r.kind.as_str(), r.bvid.as_deref(), r.ssid.as_deref()) {
         ("cheese", _, Some(ss)) => format!("cheese:ss{}", ss),
         (_, Some(bv), _) => bv.to_string(),
@@ -97,7 +97,7 @@ fn render_id_column(r: &VideoResult) -> String {
     }
 }
 
-fn print_video_table(results: &[VideoResult], limit: Option<u32>, out: &Output) {
+pub fn print_video_table(results: &[VideoResult], limit: Option<u32>, out: &Output) {
     let n = limit.unwrap_or(20) as usize;
     if results.is_empty() {
         out.status("(no results)");
@@ -120,7 +120,7 @@ fn print_video_table(results: &[VideoResult], limit: Option<u32>, out: &Output) 
     }
 }
 
-fn format_duration(sec: i64) -> String {
+pub fn format_duration(sec: i64) -> String {
     let h = sec / 3600;
     let m = (sec % 3600) / 60;
     let s = sec % 60;
@@ -131,7 +131,7 @@ fn format_duration(sec: i64) -> String {
     }
 }
 
-fn format_count(n: i64) -> String {
+pub fn format_count(n: i64) -> String {
     if n >= 100_000_000 {
         format!("{:.1}亿", n as f64 / 1e8)
     } else if n >= 10_000 {
@@ -141,7 +141,7 @@ fn format_count(n: i64) -> String {
     }
 }
 
-fn truncate(s: &str, max: usize) -> String {
+pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {

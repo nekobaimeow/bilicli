@@ -11,6 +11,7 @@ pub mod danmaku;
 pub mod db;
 pub mod download;
 pub mod harvest;
+pub mod hot;
 pub mod info;
 /// `bilicli ocr` — offline OCR (PP-OCRv5 mobile via MNN).
 pub mod ocr;

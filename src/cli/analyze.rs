@@ -109,7 +109,7 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<()> {
         no_danmaku,
         no_subtitle,
         no_review,
-        with_ocr,
+        no_ocr,
         transcribe_language,
         transcribe_device,
         transcribe_keep_tags,
@@ -203,24 +203,40 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<()> {
         Err(e) => { degraded.push(format!("review: {e}")); None }
     };
 
-    // ── 3. OCR (optional, gated) ───────────────────────────────────
-    let ocr: Option<serde_json::Value> = if *with_ocr {
-        match run_ocr(
-            video_path.as_deref(),
-            &work_dir,
-            *ocr_interval,
-            *ocr_max_frames,
-            *ocr_min_conf,
-            *ocr_dedup_window,
-        ).await {
-            Ok(v) => Some(v),
-            Err(e) => {
-                degraded.push(format!("ocr: {e}"));
-                None
-            }
-        }
-    } else {
+    // ── 3. OCR (default on, with auto-download) ─────────────────────
+    let ocr: Option<serde_json::Value> = if *no_ocr {
         None
+    } else {
+        let vp = if let Some(ref given) = video_path {
+            Some(given.clone())
+        } else {
+            match download_video_for_ocr(input, &work_dir, out).await {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    degraded.push(format!("ocr: video download failed: {e}"));
+                    None
+                }
+            }
+        };
+        match vp {
+            Some(ref vp) => {
+                match run_ocr(
+                    Some(vp),
+                    &work_dir,
+                    *ocr_interval,
+                    *ocr_max_frames,
+                    *ocr_min_conf,
+                    *ocr_dedup_window,
+                ).await {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        degraded.push(format!("ocr: {e}"));
+                        None
+                    }
+                }
+            }
+            None => None,
+        }
     };
 
     // ── 4. Assemble output ─────────────────────────────────────────
@@ -596,6 +612,185 @@ async fn run_ocr_impl(
     let _ = fs::remove_dir_all(&ocr_dir).await;
 
     Ok(json)
+}
+
+/// Download video for OCR using bilix (or bilicli download queue as fallback).
+async fn download_video_for_ocr(
+    input: &str,
+    work_dir: &Path,
+    out: &Output,
+) -> Result<PathBuf> {
+    // Try bilix first — fastest for B站
+    let bilix = which::which("bilix")
+        .or_else(|_| which::which("bilix.exe"))
+        .ok();
+    if let Some(bilix_bin) = bilix {
+        out.status("[analyze/ocr] downloading video via bilix...");
+        let bv = crate::ipc::danmaku::extract_bvid(input).unwrap_or_else(|| input.to_string());
+        let output = tokio::process::Command::new(&bilix_bin)
+            .args(["get_video", &format!("BV{bv}"), "-d"])
+            .arg(work_dir)
+            .output()
+            .await
+            .map_err(|e| CliError::msg(format!("bilix spawn: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // Don't fail — fall through to internal download
+        } else {
+            // bilix creates a subdirectory, find the mp4
+            if let Some(mp4) = find_mp4_in_dir(work_dir).await {
+                out.status(&format!("[analyze/ocr] downloaded: {}", mp4.display()));
+                return Ok(mp4);
+            }
+        }
+    }
+
+    // Fallback: use bilicli's playurl + direct DASH download
+    out.status("[analyze/ocr] downloading video (DASH)...");
+    dash_download_video(input, work_dir).await
+}
+
+/// Find an .mp4 file recursively under `dir`.
+async fn find_mp4_in_dir(dir: &Path) -> Option<PathBuf> {
+    use tokio::fs;
+    let mut read_dir = match fs::read_dir(dir).await {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    while let Ok(Some(entry)) = read_dir.next_entry().await {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = Box::pin(find_mp4_in_dir(&path)).await {
+                return Some(found);
+            }
+        } else if path.extension().map(|e| e == "mp4").unwrap_or(false) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Download video via DASH playurl — reuses the same infrastructure as audio.
+async fn dash_download_video(input: &str, work_dir: &Path) -> Result<PathBuf> {
+    use crate::ipc::danmaku;
+    use crate::ipc::playurl::{self, SegmentKind};
+    use crate::ipc::shared;
+    use tokio::fs;
+    use tokio::io::AsyncWriteExt;
+
+    let (_, aid, cid) = danmaku::resolve_cid(input).await?;
+    let manifest = playurl::fetch(aid, cid, 80, 16).await?;
+    let segments = playurl::expand(&manifest);
+
+    let client = shared::init_client()
+        .await
+        .map_err(|e| CliError::Other(e.to_string()))?;
+
+    // Download video segments
+    let mut video_parts: Vec<PathBuf> = Vec::new();
+    for (i, seg) in segments.iter().filter(|s| s.kind == SegmentKind::Video).enumerate() {
+        let path = work_dir.join(format!("video-{i}.m4s"));
+        let urls = std::iter::once(seg.url.as_str())
+            .chain(seg.backup_urls.iter().map(|s| s.as_str()));
+        let mut ok = false;
+        for url in urls {
+            if url.is_empty() { continue; }
+            match client.get(url).header(reqwest::header::ACCEPT_ENCODING, "identity").send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    let bytes = resp.bytes().await.map_err(CliError::from)?;
+                    let mut f = fs::File::create(&path).await.map_err(CliError::from)?;
+                    f.write_all(&bytes).await.map_err(CliError::from)?;
+                    f.flush().await.map_err(CliError::from)?;
+                    video_parts.push(path.clone());
+                    ok = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        if !ok {
+            return Err(CliError::msg(format!("video segment {i} download failed")));
+        }
+    }
+
+    // Download audio segments — only the first (standard AAC) track
+    let audio_segs: Vec<_> = segments.iter().filter(|s| s.kind == SegmentKind::Audio).collect();
+    let mut audio_parts: Vec<PathBuf> = Vec::new();
+    if let Some(seg) = audio_segs.first() {
+        let path = work_dir.join("audio-0.m4s");
+        let urls = std::iter::once(seg.url.as_str())
+            .chain(seg.backup_urls.iter().map(|s| s.as_str()));
+        let mut ok = false;
+        for url in urls {
+            if url.is_empty() { continue; }
+            match client.get(url).header(reqwest::header::ACCEPT_ENCODING, "identity").send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    let bytes = resp.bytes().await.map_err(CliError::from)?;
+                    let mut f = fs::File::create(&path).await.map_err(CliError::from)?;
+                    f.write_all(&bytes).await.map_err(CliError::from)?;
+                    f.flush().await.map_err(CliError::from)?;
+                    audio_parts.push(path.clone());
+                    ok = true;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        if !ok {
+            return Err(CliError::msg("audio download failed"));
+        }
+    }
+
+    // ffmpeg merge
+    let output_mp4 = work_dir.join("downloaded.mp4");
+    let ffmpeg = crate::backends::sidecar::resolve(
+        crate::backends::sidecar::SidecarKind::FFmpeg, None
+    ).map_err(|e| CliError::MissingDependency(format!("ffmpeg: {e}")))?;
+
+    // Build concat list — filenames only (all files in same work_dir)
+    let vlist_path = work_dir.join("vlist.txt");
+    let mut vlist = String::new();
+    for p in &video_parts {
+        let name = p.file_name().unwrap_or_default().to_string_lossy();
+        vlist.push_str(&format!("file '{name}'\n"));
+    }
+    fs::write(&vlist_path, &vlist).await.map_err(CliError::from)?;
+
+    let alist_path = work_dir.join("alist.txt");
+    let mut alist = String::new();
+    for p in &audio_parts {
+        let name = p.file_name().unwrap_or_default().to_string_lossy();
+        alist.push_str(&format!("file '{name}'\n"));
+    }
+    fs::write(&alist_path, &alist).await.map_err(CliError::from)?;
+
+    let status = tokio::process::Command::new(&ffmpeg)
+        .args(["-y", "-f", "concat", "-safe", "0", "-i"])
+        .arg(&vlist_path)
+        .args(["-f", "concat", "-safe", "0", "-i"])
+        .arg(&alist_path)
+        .args(["-c:v", "copy", "-c:a", "copy", "-shortest"])
+        .arg(&output_mp4)
+        .output()
+        .await
+        .map_err(|e| CliError::msg(format!("ffmpeg spawn: {e}")))?;
+
+    // Cleanup
+    let _ = fs::remove_file(&vlist_path).await;
+    let _ = fs::remove_file(&alist_path).await;
+    for p in video_parts.iter().chain(audio_parts.iter()) {
+        let _ = fs::remove_file(p).await;
+    }
+
+    if !status.status.success() {
+        return Err(CliError::msg(format!(
+            "ffmpeg merge: {} (stderr: {})",
+            status.status,
+            String::from_utf8_lossy(&status.stderr)
+        )));
+    }
+
+    Ok(output_mp4)
 }
 
 // ── Text formatting ────────────────────────────────────────────────

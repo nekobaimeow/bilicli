@@ -3,7 +3,7 @@
 
 use bilicli::cli::output::{Output, OutputMode};
 use bilicli::cli::root::{Cli, Command};
-use bilicli::cli::{setup, analyze, audio, auth, cache, config as cfg, danmaku, db as dbcmd, download, harvest, info, parse as par, repl, review, schedule, search, subtitle};
+use bilicli::cli::{setup, analyze, audio, auth, cache, config as cfg, danmaku, db as dbcmd, download, harvest, hot, info, parse as par, repl, review, schedule, search, subtitle};
 use bilicli::cli::ocr;
 use bilicli::context;
 use bilicli::doctor;
@@ -72,6 +72,7 @@ async fn async_run(cli: Cli) -> Result<(), CliError> {
         Command::Review { .. } => review::run(&cmd, &out).await,
         Command::Subtitle { .. } => subtitle::run(&cmd, &out).await,
         Command::Harvest { .. } => harvest::run(&cmd, &out).await,
+        Command::Hot { .. } => hot::run(&cmd, &out).await,
         Command::Audio { .. } => audio::run(&cmd, &out).await,
         Command::Analyze { .. } => analyze::run(&cmd, &out).await,
         Command::Ocr { .. } => ocr::run(&cmd, &out).await,

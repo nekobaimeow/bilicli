@@ -162,6 +162,16 @@ pub enum Command {
         review_ps: u32,
     },
 
+    /// Fetch B站 popular/trending videos (综合热门).
+    Hot {
+        /// Page number (1-based).
+        #[arg(long, default_value = "1")]
+        page: u32,
+        /// Results per page (max 50).
+        #[arg(long, default_value = "20")]
+        page_size: u32,
+    },
+
     /// Download the audio track only (m4a) from a B 站 video.
     ///
     /// Use case: extract audio for offline listening or speech-to-text
@@ -277,9 +287,9 @@ pub enum Command {
         /// Skip review/comment fetch.
         #[arg(long)]
         no_review: bool,
-        /// Enable OCR over video frames (requires `--video-path`).
+        /// Skip OCR over video frames. By default, OCR runs on the downloaded video.
         #[arg(long)]
-        with_ocr: bool,
+        no_ocr: bool,
         /// Language hint for ASR: auto | zh | yue | en | ja | ko.
         #[arg(long, default_value = "auto")]
         transcribe_language: String,
@@ -301,7 +311,7 @@ pub enum Command {
         /// OCR dedup window in seconds.
         #[arg(long, default_value = "3.0")]
         ocr_dedup_window: f32,
-        /// Local video file path for OCR (required with --with-ocr).
+        /// Local video file path for OCR (auto-downloaded if not given).
         #[arg(long)]
         video_path: Option<std::path::PathBuf>,
     },
