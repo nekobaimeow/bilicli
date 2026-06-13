@@ -205,6 +205,7 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<()> {
     };
 
     // ── 3. OCR (default on, with auto-download) ─────────────────────
+    #[cfg(feature = "ocr")]
     let ocr: Option<serde_json::Value> = if *no_ocr {
         None
     } else {
@@ -238,6 +239,13 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<()> {
             }
             None => None,
         }
+    };
+    #[cfg(not(feature = "ocr"))]
+    let ocr: Option<serde_json::Value> = {
+        if !*no_ocr {
+            degraded.push("ocr: compiled without ocr feature".into());
+        }
+        None
     };
 
     // ── 4. Assemble output ─────────────────────────────────────────
@@ -529,6 +537,7 @@ async fn run_review(input: &str, pages: u32) -> Result<ReviewSection> {
     })
 }
 
+#[cfg(feature = "ocr")]
 async fn run_ocr(
     video_path: Option<&Path>,
     work_dir: &Path,
@@ -553,6 +562,7 @@ async fn run_ocr(
     run_ocr_impl(&video, work_dir, interval, max_frames, _min_conf, dedup_window).await
 }
 
+#[cfg(feature = "ocr")]
 async fn run_ocr_impl(
     video: &Path,
     work_dir: &Path,
@@ -623,6 +633,7 @@ async fn run_ocr_impl(
 }
 
 /// Download video for OCR using bilicli's own download queue.
+#[cfg(feature = "ocr")]
 async fn download_video_for_ocr(
     input: &str,
     work_dir: &Path,
@@ -672,6 +683,7 @@ async fn download_video_for_ocr(
 }
 
 /// Find an .mp4 file recursively under `dir`.
+#[cfg(feature = "ocr")]
 async fn find_mp4_in_dir(dir: &Path) -> Option<PathBuf> {
     use tokio::fs;
     let mut read_dir = match fs::read_dir(dir).await {
@@ -692,6 +704,7 @@ async fn find_mp4_in_dir(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Download video via DASH playurl — reuses the same infrastructure as audio.
+#[cfg(feature = "ocr")]
 async fn dash_download_video(input: &str, work_dir: &Path) -> Result<PathBuf> {
     use crate::ipc::danmaku;
     use crate::ipc::playurl::{self, SegmentKind};

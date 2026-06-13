@@ -35,4 +35,5 @@ pub mod transcribe;
 /// is gated on the feature. With the feature off, calling
 /// `ocr::run_ocr(...)` returns a friendly error pointing at the missing
 /// feature flag.
+#[cfg(feature = "ocr")]
 pub mod ocr;

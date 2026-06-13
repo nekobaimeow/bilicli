@@ -14,6 +14,7 @@ pub mod harvest;
 pub mod hot;
 pub mod info;
 /// `bilicli ocr` — offline OCR (PP-OCRv5 mobile via MNN).
+#[cfg(feature = "ocr")]
 pub mod ocr;
 pub mod output;
 pub mod parse;

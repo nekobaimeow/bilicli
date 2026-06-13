@@ -1,3 +1,4 @@
+#![cfg(feature = "ocr")]
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `bilicli ocr` subcommand — offline OCR via PaddleOCR + MNN.
 //!

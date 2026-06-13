@@ -62,6 +62,7 @@ pub async fn run() -> Result<DoctorReport, CliError> {
     checks.push(check_funasr().await);
 
     // 9. OCR models
+#[cfg(feature = "ocr")]
     checks.push(check_ocr_models());
 
     let ok = checks.iter().all(|c| c.ok || c.name == "danmaku_factory"); // DanmakuFactory is optional
@@ -208,6 +209,7 @@ async fn check_funasr() -> CheckResult {
     }
 }
 
+#[cfg(feature = "ocr")]
 fn check_ocr_models() -> CheckResult {
     // Check the bundled models/ocr-fast/ directory (relative to the binary,
     // or from env BILICLI_OCR_MODEL_DIR). At package time we ship

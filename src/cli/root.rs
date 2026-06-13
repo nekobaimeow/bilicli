@@ -215,6 +215,7 @@ pub enum Command {
     /// Use case: extract hard-coded text from screenshots, video title
     /// cards, on-screen watermarks, B-roll subtitles, etc. — text that
     /// B 站's own AI subtitle pipeline misses.
+#[cfg(feature = "ocr")]
     Ocr {
         /// Image file path, or — with `--video` — a local video file.
         /// (B 站 BV/AV support requires you to download first; the error
