@@ -2,7 +2,7 @@
 // Path utilities — replacement for `tauri::Manager::path`.
 //
 // The CLI uses XDG / standard OS paths to remain GUI-tooling-free.
-// Data dir is intentionally kept at `com.btjawa.bilitools` to be
+// Data dir is intentionally kept at `com.btjawa.bilicli` to be
 // interoperable with the GUI BiliTools version (cookies, tasks, settings
 // are read/written from the same SQLite db).
 
@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 
 const QUALIFIER: &str = "com";
 const ORG: &str = "btjawa";
-const APP: &str = "bilitools";
+const APP: &str = "bilicli";
 
 /// Wrapper around `directories::ProjectDirs` so we can override data dir
-/// via env var `BILITOOLS_DATA_DIR` (useful for tests and headless installs).
+/// via env var `BILICLI_DATA_DIR` (useful for tests and headless installs).
 #[derive(Debug)]
 pub struct Paths {
     project: ProjectDirs,
@@ -28,13 +28,13 @@ impl Paths {
             .ok_or_else(|| CliError::msg("could not determine project directories"))?;
         Ok(Self {
             project,
-            override_data: std::env::var_os("BILITOOLS_DATA_DIR").map(PathBuf::from),
+            override_data: std::env::var_os("BILICLI_DATA_DIR").map(PathBuf::from),
         })
     }
 
     /// Construct Paths with an explicit data dir override. Used by tests
     /// to avoid race conditions when multiple tests set
-    /// `BILITOOLS_DATA_DIR` concurrently.
+    /// `BILICLI_DATA_DIR` concurrently.
     pub fn with_data_dir(data_dir: PathBuf) -> Result<Self, CliError> {
         let project = ProjectDirs::from(QUALIFIER, ORG, APP)
             .ok_or_else(|| CliError::msg("could not determine project directories"))?;
@@ -44,9 +44,9 @@ impl Paths {
         })
     }
 
-    /// `XDG_DATA_HOME/com.btjawa.bilitools` (Linux)
-    /// `~/Library/Application Support/com.btjawa.bilitools` (macOS)
-    /// `%AppData%\com.btjawa.bilitools` (Windows)
+    /// `XDG_DATA_HOME/com.btjawa.bilicli` (Linux)
+    /// `~/Library/Application Support/com.btjawa.bilicli` (macOS)
+    /// `%AppData%\com.btjawa.bilicli` (Windows)
     pub fn data_dir(&self) -> PathBuf {
         if let Some(ref p) = self.override_data {
             return p.clone();
@@ -64,28 +64,28 @@ impl Paths {
         self.storage_dir().join("storage.db")
     }
 
-    /// `XDG_CONFIG_HOME/com.btjawa.bilitools` (CLI-only config file, separate from DB)
+    /// `XDG_CONFIG_HOME/com.btjawa.bilicli` (CLI-only config file, separate from DB)
     pub fn config_dir(&self) -> PathBuf {
         self.project.config_dir().to_path_buf()
     }
 
-    /// `config_dir/bilitools.toml` — CLI-specific config (sidecar paths, etc).
+    /// `config_dir/bilicli.toml` — CLI-specific config (sidecar paths, etc).
     /// The bulk of settings still live in the SQLite db for GUI compat.
     pub fn config_file(&self) -> PathBuf {
-        self.config_dir().join("bilitools.toml")
+        self.config_dir().join("bilicli.toml")
     }
 
-    /// `XDG_DATA_HOME/com.btjawa.bilitools/logs/`
+    /// `XDG_DATA_HOME/com.btjawa.bilicli/logs/`
     pub fn log_dir(&self) -> PathBuf {
         self.data_dir().join("logs")
     }
 
-    /// `XDG_CACHE_HOME/com.btjawa.bilitools/`
+    /// `XDG_CACHE_HOME/com.btjawa.bilicli/`
     pub fn cache_dir(&self) -> PathBuf {
         self.project.cache_dir().to_path_buf()
     }
 
-    /// `XDG_RUNTIME_DIR/com.btjawa.bilitools/` — Aria2 RPC secret/socket go here.
+    /// `XDG_RUNTIME_DIR/com.btjawa.bilicli/` — Aria2 RPC secret/socket go here.
     pub fn runtime_dir(&self) -> PathBuf {
         if let Some(runtime) = directories::UserDirs::new().and_then(|_| {
             std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
@@ -109,7 +109,7 @@ impl Paths {
         Ok(())
     }
 
-    /// Default `down_dir` — `$HOME/Downloads/bilitools`
+    /// Default `down_dir` — `$HOME/Downloads/bilicli`
     pub fn default_download_dir(&self) -> PathBuf {
         if let Some(home) = directories::UserDirs::new().and_then(|u| u.home_dir().to_path_buf().into()) {
             return home.join("Downloads").join(APP);
@@ -164,35 +164,35 @@ mod tests {
     #[test]
     fn override_data_dir_via_env() {
         let tmp = env::temp_dir().join(format!(
-            "bilitools-cli-test-{}",
+            "bilicli-test-{}",
             uuid::Uuid::new_v4()
         ));
-        env::set_var("BILITOOLS_DATA_DIR", &tmp);
+        env::set_var("BILICLI_DATA_DIR", &tmp);
         let p = Paths::new().unwrap();
         assert_eq!(p.data_dir(), tmp);
-        env::remove_var("BILITOOLS_DATA_DIR");
+        env::remove_var("BILICLI_DATA_DIR");
     }
 
     #[test]
     fn ensure_creates_dirs() {
         let tmp = env::temp_dir().join(format!(
-            "bilitools-cli-ensure-{}",
+            "bilicli-ensure-{}",
             uuid::Uuid::new_v4()
         ));
-        env::set_var("BILITOOLS_DATA_DIR", &tmp);
+        env::set_var("BILICLI_DATA_DIR", &tmp);
         let p = Paths::new().unwrap();
         p.ensure().expect("ensure should succeed");
         assert!(p.data_dir().is_dir());
         assert!(p.storage_dir().is_dir());
         assert!(p.log_dir().is_dir());
-        env::remove_var("BILITOOLS_DATA_DIR");
+        env::remove_var("BILICLI_DATA_DIR");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn dir_size_on_temp_file() {
         let tmp = env::temp_dir().join(format!(
-            "bilitools-cli-size-{}",
+            "bilicli-size-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&tmp).unwrap();

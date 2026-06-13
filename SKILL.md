@@ -1,14 +1,14 @@
 ---
-name: bilitools
-description: "Use this skill whenever the user needs to download, search, or inspect content from Bilibili (B 站). Triggers: user mentions B 站, Bilibili, BV/av/SS/EP, 弹幕, 字幕, 评论, 封面, UP 主, 番剧, 课堂, "看视频" (analyze a video), "分析这个 B 站视频" (analyze this B 站 video), "帮我扒一下" (scrape/extract), or wants to fetch danmaku / comments / subtitles / audio transcript / video metadata / search results from bilibili.com. This skill wraps the `bilitools` CLI which is a pure-Rust port of the BiliTools GUI; it covers video download (DASH segments via aria2c + ffmpeg merge), audio-only download (m4a) + optional local ASR (sensevoice), danmaku (XML or ASS via DanmakuFactory), comments (hot + time + sub-replies), subtitles (JSON, requires login + wbi sign), search (video / bangumi / user / cheese course aware), and a `harvest` batch that does all four for top-N search results. Use this whenever B 站 / Bilibili content extraction or text-based video analysis is the task. Do NOT use for non-Bilibili video sites (YouTube, Vimeo, etc.) or for posting content back to B 站."
+name: bilicli
+description: "Use this skill whenever the user needs to download, search, or inspect content from Bilibili (B 站). Triggers: user mentions B 站, Bilibili, BV/av/SS/EP, 弹幕, 字幕, 评论, 封面, UP 主, 番剧, 课堂, "看视频" (analyze a video), "分析这个 B 站视频" (analyze this B 站 video), "帮我扒一下" (scrape/extract), or wants to fetch danmaku / comments / subtitles / audio transcript / video metadata / search results from bilibili.com. This skill wraps the `bilicli` CLI which is a pure-Rust port of the BiliTools GUI; it covers video download (DASH segments via aria2c + ffmpeg merge), audio-only download (m4a) + optional local ASR (sensevoice), danmaku (XML or ASS via DanmakuFactory), comments (hot + time + sub-replies), subtitles (JSON, requires login + wbi sign), search (video / bangumi / user / cheese course aware), and a `harvest` batch that does all four for top-N search results. Use this whenever B 站 / Bilibili content extraction or text-based video analysis is the task. Do NOT use for non-Bilibili video sites (YouTube, Vimeo, etc.) or for posting content back to B 站."
 license: GPL-3.0-or-later
 ---
 
-# bilitools — Bilibili CLI Toolkit
+# bilicli — Bilibili CLI Toolkit
 
 ## Overview
 
-`bilitools` is a pure-Rust CLI port of the [BiliTools](https://github.com/btjawa/BiliTools) GUI app.
+`bilicli` is a pure-Rust CLI port of the [BiliTools](https://github.com/btjawa/BiliTools) GUI app.
 It exposes **17 subcommands** for searching, downloading, and inspecting B 站 content from the
 terminal or from another AI agent. The original Rust backend logic (WBI signing, buvid
 fingerprinting, aria2 RPC, ffmpeg merge, SQLite task queue) is reused unchanged; only the
@@ -36,16 +36,16 @@ Tauri GUI layer was stripped.
 
 | Task | Command |
 |------|---------|
-| Search "黄金" top 5 | `bilitools search "黄金" --limit 5` |
-| Fetch comments for a video | `bilitools review BV1CZEY67E8o` |
-| Fetch danmaku (XML + ASS) | `bilitools danmaku BV1CZEY67E8o` |
-| Fetch subtitles | `bilitools subtitle BV1XBRuBSEd7 --download -o /tmp/subs` |
-| Download audio only (m4a) | `bilitools audio BV1XBRuBSEd7 -o ~/Music` |
-| Download full video (1080P) | `bilitools download submit BV1XBRuBSEd7` + `bilitools download run <task_id>` |
-| Batch: top 5 黄金 results → danmaku + comments + subs | `bilitools harvest "黄金" --limit 5 -o ./out` |
-| Check login + sidecars | `bilitools doctor` |
-| Log in (QR code) | `bilitools auth qrcode -o qr.png` + `bilitools auth qrcode-poll <key>` |
-| **OCR** a screenshot or video frame (PP-OCRv5) | `bilitools ocr screenshot.png` / `bilitools ocr video.mp4 --video` (opt-in `--features ocr`) |
+| Search "黄金" top 5 | `bilicli search "黄金" --limit 5` |
+| Fetch comments for a video | `bilicli review BV1CZEY67E8o` |
+| Fetch danmaku (XML + ASS) | `bilicli danmaku BV1CZEY67E8o` |
+| Fetch subtitles | `bilicli subtitle BV1XBRuBSEd7 --download -o /tmp/subs` |
+| Download audio only (m4a) | `bilicli audio BV1XBRuBSEd7 -o ~/Music` |
+| Download full video (1080P) | `bilicli download submit BV1XBRuBSEd7` + `bilicli download run <task_id>` |
+| Batch: top 5 黄金 results → danmaku + comments + subs | `bilicli harvest "黄金" --limit 5 -o ./out` |
+| Check login + sidecars | `bilicli doctor` |
+| Log in (QR code) | `bilicli auth qrcode -o qr.png` + `bilicli auth qrcode-poll <key>` |
+| **OCR** a screenshot or video frame (PP-OCRv5) | `bilicli ocr screenshot.png` / `bilicli ocr video.mp4 --video` (opt-in `--features ocr`) |
 | **Analyze a video** (搜 → 元数据 → 弹幕/评论/字幕/音频转录/OCR) | see [standard workflow below](#analyzing-a-b-站-video-the-standard-看视频-workflow) |
 
 All subcommands accept `--json` for machine-readable output. **Always prefer `--json` when
@@ -53,21 +53,21 @@ this skill is being driven by another agent** (table output is for humans, JSON 
 
 ## Installation
 
-The `bilitools` binary must be on `$PATH` (or at `~/.cargo/bin/bilitools`).
+The `bilicli` binary must be on `$PATH` (or at `~/.cargo/bin/bilicli`).
 
 ```bash
 # Build from source
-git clone https://github.com/nekobaimeow/bilitools-cli
-cd bilitools-cli
+git clone https://github.com/nekobaimeow/bilicli
+cd bilicli
 cargo build --release
-sudo cp target/release/bilitools /usr/local/bin/
+sudo cp target/release/bilicli /usr/local/bin/
 
 # Verify
-bilitools --version
-bilitools doctor   # checks aria2c + ffmpeg + DanmakuFactory + B 站 API
+bilicli --version
+bilicli doctor   # checks aria2c + ffmpeg + DanmakuFactory + B 站 API
 ```
 
-**Required sidecars** (all `which`-detectable, override via `BILITOOLS_SIDECAR_*` env):
+**Required sidecars** (all `which`-detectable, override via `BILICLI_SIDECAR_*` env):
 - `aria2c` — DASH segment downloads (parallel + resumable)
 - `ffmpeg` — final mp4 muxing + m4a extraction
 
@@ -77,20 +77,20 @@ bilitools doctor   # checks aria2c + ffmpeg + DanmakuFactory + B 站 API
 ## Authentication
 
 Most endpoints work **better** when logged in. Login state lives in the SQLite database at
-`$XDG_DATA_HOME/com.btjawa.bilitools/Storage/storage.db` (or `BILITOOLS_DATA_DIR/Storage/`).
+`$XDG_DATA_HOME/com.btjawa.bilicli/Storage/storage.db` (or `BILICLI_DATA_DIR/Storage/`).
 
 ```bash
 # 1. Generate a QR code PNG
-bilitools --json auth qrcode -o /tmp/qr.png
+bilicli --json auth qrcode -o /tmp/qr.png
 # → {"data": {"qrcode_key": "...", "url": "..."}, ...}
 
 # 2. User scans the QR with the B 站 mobile app
 
 # 3. Poll until login succeeds
-bilitools auth qrcode-poll <qrcode_key>
+bilicli auth qrcode-poll <qrcode_key>
 
 # 4. Verify
-bilitools --json auth status
+bilicli --json auth status
 # → {"data": {"cookies": ["SESSDATA", "DedeUserID", "bili_jct", ...], "logged_in": true}}
 ```
 
@@ -102,8 +102,8 @@ limits (e.g. comments are capped at 3-5 per page, subtitles are usually empty).
 ### `search` — Search B 站
 
 ```bash
-bilitools search "原神 演示" --limit 5
-bilitools --json search "原神 演示" --type bangumi --page 1 --page-size 20
+bilicli search "原神 演示" --limit 5
+bilicli --json search "原神 演示" --type bangumi --page 1 --page-size 20
 ```
 
 - `--type` accepts: `video` (default), `bangumi`, `user`, `article`, `audio`, `live`, `topic`
@@ -114,7 +114,7 @@ bilitools --json search "原神 演示" --type bangumi --page 1 --page-size 20
 ### `danmaku` — Fetch danmaku
 
 ```bash
-bilitools danmaku BV1R1e4zKEh1 --format both -o /tmp/dm
+bilicli danmaku BV1R1e4zKEh1 --format both -o /tmp/dm
 # Writes /tmp/dm/{cid}.xml and /tmp/dm/{cid}.ass (if DanmakuFactory installed)
 ```
 
@@ -126,9 +126,9 @@ bilitools danmaku BV1R1e4zKEh1 --format both -o /tmp/dm
 ### `review` — Fetch comments
 
 ```bash
-bilitools review BV1CZEY67E8o --sort hot --ps 10
-bilitools --json review BV1CZEY67E8o --sort time --page 2 --ps 20
-bilitools review BV1CZEY67E8o --sub 305363471760  # fetch sub-replies for one rpid
+bilicli review BV1CZEY67E8o --sort hot --ps 10
+bilicli --json review BV1CZEY67E8o --sort time --page 2 --ps 20
+bilicli review BV1CZEY67E8o --sub 305363471760  # fetch sub-replies for one rpid
 ```
 
 - `--sort hot` (default, `sort=2`) or `time` (`sort=0`).
@@ -139,15 +139,15 @@ bilitools review BV1CZEY67E8o --sub 305363471760  # fetch sub-replies for one rp
 ### `subtitle` — Fetch subtitles
 
 ```bash
-bilitools --json subtitle BV1XBRuBSEd7                 # list metadata only
-bilitools subtitle BV1XBRuBSEd7 --download -o /tmp/s  # download JSON bodies
+bilicli --json subtitle BV1XBRuBSEd7                 # list metadata only
+bilicli subtitle BV1XBRuBSEd7 --download -o /tmp/s  # download JSON bodies
 ```
 
 **IMPORTANT** — this subcommand uses WBI signing internally. B 站 has two subtitle fields:
 - `data.subtitle.list[]` — public, **always empty for non-browser clients**
 - `data.subtitle.subtitles[]` — WBI-signed, **real data**
 
-`bilitools` does the WBI signing automatically (via `shared::wbi_sign()`) and reads
+`bilicli` does the WBI signing automatically (via `shared::wbi_sign()`) and reads
 `subtitles[]`. Without SESSDATA, the API will return 0 entries even for videos that have
 subtitles. If you see `[info] no subtitles available`, log in first.
 
@@ -157,14 +157,14 @@ JSON files land as `{subtitle_id}.{lan}.json` in the output dir. B 站's body is
 ### `audio` — Download audio track only (m4a)
 
 ```bash
-bilitools audio BV1XBRuBSEd7 -o ~/Music/bili
-bilitools --json audio BV1CZEY67E8o -q 16  # 360P tier; audio bitrate chosen by B 站
+bilicli audio BV1XBRuBSEd7 -o ~/Music/bili
+bilicli --json audio BV1CZEY67E8o -q 16  # 360P tier; audio bitrate chosen by B 站
 
 # Optional: also produce a local transcript (requires --features transcribe
 # at build time AND the external `sensevoice` CLI on PATH — see
 # "Audio Transcription" below).
-bilitools audio BV1XBRuBSEd7 --transcribe -o ~/podcast
-bilitools audio <bv> --transcribe --transcribe-language en --transcribe-device cuda
+bilicli audio BV1XBRuBSEd7 --transcribe -o ~/podcast
+bilicli audio <bv> --transcribe --transcribe-language en --transcribe-device cuda
 ```
 
 - DASH audio segment → reqwest download (no aria2c overhead for single file) → ffmpeg
@@ -179,18 +179,18 @@ bilitools audio <bv> --transcribe --transcribe-language en --transcribe-device c
 
 ```bash
 # 1. Submit a task
-bilitools --json download submit BV1XBRuBSEd7 --output-dir ~/Videos/bili
+bilicli --json download submit BV1XBRuBSEd7 --output-dir ~/Videos/bili
 # → {"data": {"task_id": "uuid", ...}}
 
 # 2. Run it (DASH video + audio segments + ffmpeg merge → mp4)
-bilitools --json download run <task_id>
+bilicli --json download run <task_id>
 # → {"data": {"output": "/path/to/merged.mp4", "segments": [...], ...}}
 
 # Or batch
-bilitools download batch urls.txt   # one URL per line
-bilitools download list            # list all tasks
-bilitools download show <id>       # task details
-bilitools download cancel / pause / resume / retry
+bilicli download batch urls.txt   # one URL per line
+bilicli download list            # list all tasks
+bilicli download show <id>       # task details
+bilicli download cancel / pause / resume / retry
 ```
 
 `--quality 80` (1080P), `64` (720P), `32` (480P), `16` (360P). Default 80. Audio is picked
@@ -199,8 +199,8 @@ by B 站 independently of `--quality`.
 ### `harvest` — Batch all-in-one for top-N search results
 
 ```bash
-bilitools harvest "黄金" --limit 5 -o ./out
-bilitools harvest "原神" --limit 3 --no-danmaku --no-review --no-subtitle
+bilicli harvest "黄金" --limit 5 -o ./out
+bilicli harvest "原神" --limit 3 --no-danmaku --no-review --no-subtitle
 ```
 
 - Runs `search` → for each top-N: `danmaku` + `review` + `subtitle` (or subset via flags).
@@ -244,11 +244,11 @@ The input may be any of:
 | Search theme "黄金价格 2026" | Run `search` first, present top results, ask user to pick or auto-pick #1 |
 | Fuzzy "昨天那个视频" | If you have session history pointing at a BV, use it; else ask |
 
-`bilitools parse` accepts all the above forms and returns the canonical `{bvid, aid, cid,
+`bilicli parse` accepts all the above forms and returns the canonical `{bvid, aid, cid,
 title, duration, ...}`. Use it as a normalization step before anything else.
 
 ```bash
-bilitools --json parse url "https://www.bilibili.com/video/BV1CZEY67E8o"
+bilicli --json parse url "https://www.bilibili.com/video/BV1CZEY67E8o"
 # → {"data": {"bvid": "BV1CZEY67E8o", "aid": ..., "cid": ..., "title": "...", ...}}
 ```
 
@@ -259,20 +259,20 @@ are independent):
 
 ```bash
 # 1a. Metadata (title, UP 主, desc, tags, stats, cid for the others)
-bilitools --json parse url BV... | jq '.data | {bvid,title,author,desc,pubdate,duration,stat}'
+bilicli --json parse url BV... | jq '.data | {bvid,title,author,desc,pubdate,duration,stat}'
 
 # 1b. 弹幕 — real-time viewer reactions; for analysis, prefer `--source live` XML
-bilitools --json danmaku BV... --format xml --source live -o /tmp/dm
+bilicli --json danmaku BV... --format xml --source live -o /tmp/dm
 
 # 1c. 评论 (top + recent) — usually more analytical than danmaku
-bilitools --json review BV... --sort hot --ps 30
-bilitools --json review BV... --sort time --ps 30  # secondary pass for recency
+bilicli --json review BV... --sort hot --ps 30
+bilicli --json review BV... --sort time --ps 30  # secondary pass for recency
 
 # 1d. 字幕 — the most accurate transcript (B 站's own AI or human subs)
-bilitools --json subtitle BV... --download -o /tmp/subs
+bilicli --json subtitle BV... --download -o /tmp/subs
 ```
 
-If `danmaku` / `review` / `subtitle` return empty / 0 entries, run `bilitools auth
+If `danmaku` / `review` / `subtitle` return empty / 0 entries, run `bilicli auth
 status` — the most common cause is **not being logged in** (anonymous mode caps
 subtitles and comments). If unauthenticated, stop and tell the user to scan a QR.
 
@@ -283,11 +283,11 @@ If `subtitle` returned 0 entries, OR the user wants **verbatim** speech-to-text
 
 ```bash
 # 2a. Download m4a only (no video, fast)
-bilitools --json audio BV... -o /tmp/audio
+bilicli --json audio BV... -o /tmp/audio
 
 # 2b. (optional) transcribe via sensevoice — requires --features transcribe at build
 #     AND the `sensevoice` CLI on PATH; see "Audio Transcription" below
-bilitools --json audio BV... --transcribe -o /tmp/audio
+bilicli --json audio BV... --transcribe -o /tmp/audio
 ```
 
 If the binary was NOT built with `--features transcribe`, OR `sensevoice` is missing,
@@ -298,7 +298,7 @@ say so clearly and offer the user the `.m4a` path so they can run their own ASR.
 
 B 站's own subtitle pipeline misses a lot of visual text — title cards, watermarks,
 on-screen labels, in-frame Chinese/English, foreign-language text without audio, etc.
-`bilitools ocr` runs **PP-OCRv5 mobile (FP16, MNN backend)** fully offline to catch
+`bilicli ocr` runs **PP-OCRv5 mobile (FP16, MNN backend)** fully offline to catch
 the rest. Requires the binary to be built with `--features ocr` AND MNN model files
 in `models/ocr-fast/`. See the **OCR subcommand** section below.
 
@@ -342,7 +342,7 @@ structure for the final reply:
 For top-N search results, `harvest` does Phases 1a–1d in one call:
 
 ```bash
-bilitools harvest "黄金价格" --limit 5 -o ./gold-batch
+bilicli harvest "黄金价格" --limit 5 -o ./gold-batch
 # Produces 5 subdirs: <title>/{danmaku.xml, review.json, subtitle-*.json, meta.json}
 ```
 
@@ -350,10 +350,10 @@ For a single video, you can fake the same shape with:
 
 ```bash
 mkdir -p /tmp/one/{dm,subs}
-bilitools danmaku BV... -o /tmp/one/dm
-bilitools subtitle BV... --download -o /tmp/one/subs
-bilitools review BV... --json > /tmp/one/review.json
-bilitools --json parse url BV... > /tmp/one/meta.json
+bilicli danmaku BV... -o /tmp/one/dm
+bilicli subtitle BV... --download -o /tmp/one/subs
+bilicli review BV... --json > /tmp/one/review.json
+bilicli --json parse url BV... > /tmp/one/meta.json
 ```
 
 ## Common Workflows
@@ -362,29 +362,29 @@ bilitools --json parse url BV... > /tmp/one/meta.json
 
 ```bash
 # Login once
-bilitools auth qrcode -o /tmp/qr.png && bilitools auth qrcode-poll $KEY
+bilicli auth qrcode -o /tmp/qr.png && bilicli auth qrcode-poll $KEY
 
 # Search & download
-bilitools --json search "AI 教程" --limit 3
-TID=$(bilitools --json download submit BV... | jq -r .data.task_id)
-bilitools --json download run $TID
+bilicli --json search "AI 教程" --limit 3
+TID=$(bilicli --json download submit BV... | jq -r .data.task_id)
+bilicli --json download run $TID
 
 # Annotate the downloaded video
-bilitools subtitle BV... --download -o /tmp/subs
-bilitools review BV... --ps 20 --json > /tmp/comments.json
-bilitools danmaku BV... --format xml -o /tmp/dm
+bilicli subtitle BV... --download -o /tmp/subs
+bilicli review BV... --ps 20 --json > /tmp/comments.json
+bilicli danmaku BV... --format xml -o /tmp/dm
 ```
 
 ### 2. Quick "watch later" — just the audio
 
 ```bash
-bilitools audio BV... -o ~/Music/podcast
+bilicli audio BV... -o ~/Music/podcast
 # Then in your podcast player, point at ~/Music/podcast
 ```
 
 ### 3. Speech-to-text pipeline (local, offline, no API key)
 
-bilitools integrates with [sensevoice-skill](https://github.com/nekobaimeow/sensevoice-skill),
+bilicli integrates with [sensevoice-skill](https://github.com/nekobaimeow/sensevoice-skill),
 a one-shot Python CLI wrapping Alibaba's SenseVoiceSmall. RTF ~0.12 on CPU, 900 MB
 one-time model download, supports zh / yue / en / ja / ko.
 
@@ -393,24 +393,24 @@ one-time model download, supports zh / yue / en / ja / ko.
 pip install funasr numpy soundfile
 git clone https://github.com/nekobaimeow/sensevoice-skill
 # (puts a `sensevoice` script in the repo; either put it on PATH or pass
-#  --sensevoice-cli /full/path/to/sensevoice to bilitools)
+#  --sensevoice-cli /full/path/to/sensevoice to bilicli)
 
-# Step 1: rebuild bilitools with the optional transcribe feature
+# Step 1: rebuild bilicli with the optional transcribe feature
 cargo install --path . --features transcribe
 
 # Step 2: download audio + transcribe in one shot
-bilitools audio BV1XBRuBSEd7 --transcribe -o ~/podcast
+bilicli audio BV1XBRuBSEd7 --transcribe -o ~/podcast
 #   → ~/podcast/<title>-<cid>.m4a         (audio)
 #   → ~/podcast/<title>-<cid>_文字稿.txt   (transcript, 4633 chars / 10min)
 ```
 
-For **other** ASR backends (whisper.cpp, MiniMax API, etc.), bilitools does not bundle them
+For **other** ASR backends (whisper.cpp, MiniMax API, etc.), bilicli does not bundle them
 — feed the `.m4a` straight into your own tool.
 
 ### 4. Search → top 5 → save everything
 
 ```bash
-bilitools harvest "TED 演讲" --limit 5 -o ./ted-batch
+bilicli harvest "TED 演讲" --limit 5 -o ./ted-batch
 # Produces 5 subdirs each with danmaku.xml + review.json + subtitle(s) + meta.json
 ```
 
@@ -428,7 +428,7 @@ bilitools harvest "TED 演讲" --limit 5 -o ./ted-batch
   ```json
   {"ok": false, "error": {"code": "API", "message": "..."}}
   ```
-  **When driving bilitools from another agent, ALWAYS use `--json`** and parse with `jq` /
+  **When driving bilicli from another agent, ALWAYS use `--json`** and parse with `jq` /
   Python `json` to avoid log-line pollution.
 
 - **Exit code**: `0` on success, `1` on any error. Some subcommands return `0` even with
@@ -442,16 +442,16 @@ Optional local ASR via [sensevoice-skill](https://github.com/nekobaimeow/sensevo
 This is an **opt-in feature** to keep the default binary lean. Two conditions must
 be true simultaneously for it to work:
 
-1. **bilitools was built with `--features transcribe`**
+1. **bilicli was built with `--features transcribe`**
 2. **The `sensevoice` script is on PATH** (or pass `--sensevoice-cli /path`)
 
-Without either, the user gets a clear error message at runtime — bilitools will
+Without either, the user gets a clear error message at runtime — bilicli will
 **never** silently no-op.
 
 ### Build
 
 ```bash
-cargo install --path /path/to/bilitools-cli --features transcribe
+cargo install --path /path/to/bilicli --features transcribe
 # or, from the repo:
 cargo build --release --features transcribe
 ```
@@ -469,7 +469,7 @@ cd sensevoice-skill && chmod +x sensevoice
 # Option A: put it on PATH
 sudo ln -s "$(pwd)/sensevoice" /usr/local/bin/sensevoice
 # Option B: pass full path each invocation (no PATH change)
-bilitools audio <bv> --transcribe --sensevoice-cli /full/path/to/sensevoice
+bilicli audio <bv> --transcribe --sensevoice-cli /full/path/to/sensevoice
 ```
 
 First `sensevoice` run downloads `iic/SenseVoiceSmall` (~900 MB) from ModelScope.
@@ -479,15 +479,15 @@ Subsequent runs use the cache at `~/.cache/modelscope/`.
 
 ```bash
 # Download audio + transcribe in one shot
-bilitools audio BV1XBRuBSEd7 --transcribe -o ~/podcast
+bilicli audio BV1XBRuBSEd7 --transcribe -o ~/podcast
 
 # Language / device / tag options
-bilitools audio <bv> --transcribe --transcribe-language en
-bilitools audio <bv> --transcribe --transcribe-device cuda        # needs CUDA torch
-bilitools audio <bv> --transcribe --transcribe-keep-tags          # keep <|HAPPY|>
+bilicli audio <bv> --transcribe --transcribe-language en
+bilicli audio <bv> --transcribe --transcribe-device cuda        # needs CUDA torch
+bilicli audio <bv> --transcribe --transcribe-keep-tags          # keep <|HAPPY|>
 
 # JSON output (transcript printed as a second JSON line — jq -s to combine)
-bilitools --json audio <bv> --transcribe | jq -s '.[0].audio + .[1].transcript'
+bilicli --json audio <bv> --transcribe | jq -s '.[0].audio + .[1].transcript'
 ```
 
 ### Flags (audio subcommand)
@@ -523,7 +523,7 @@ A successful run produces two files in `-o`:
 | `python3 not found in PATH` | `sudo apt install python3` |
 | `the sensevoice CLI is not on PATH` | Install per instructions above |
 | `ModuleNotFoundError: No module named 'funasr'` | `pip install funasr numpy soundfile` |
-| `bilitools was built without the 'transcribe' feature` | `cargo install --path . --features transcribe` |
+| `bilicli was built without the 'transcribe' feature` | `cargo install --path . --features transcribe` |
 | `sensevoice timed out after Ns` | First run downloads ~900 MB; raise timeout or be patient |
 
 ### When to use sensevoice vs. alternatives
@@ -533,7 +533,7 @@ A successful run produces two files in `-o`:
 - **Cloud API** (Deepgram, AssemblyAI, MiniMax ASR): best for low-latency streaming,
   multilingual noise robustness, speaker diarization.
 
-bilitools only bundles the bilitools↔sensevoice integration. For Whisper / cloud,
+bilicli only bundles the bilicli↔sensevoice integration. For Whisper / cloud,
 call those tools directly on the `.m4a` output.
 
 ## Known Pitfalls
@@ -550,7 +550,7 @@ call those tools directly on the `.m4a` output.
    debugging the API directly, read the right field.
 
 4. **Anonymous = rate-limited.** Without SESSDATA: comments 3-5/page, subtitles usually
-   0, audio/video may need login for 1080P+. Log in via `bilitools auth qrcode` for full
+   0, audio/video may need login for 1080P+. Log in via `bilicli auth qrcode` for full
    access.
 
 5. **4K HDR is mostly marketing.** B 站 returns 4K in `accept_quality[]` for many videos
@@ -579,9 +579,9 @@ call those tools directly on the `.m4a` output.
    recovers from via the "looks like JSON" sniff. The XML body has no JSON sniff
    fallback, so it died loudly.
 
-8. **`--transcribe` requires two opt-ins.** The bilitools binary must be built with
+8. **`--transcribe` requires two opt-ins.** The bilicli binary must be built with
    `--features transcribe` AND the `sensevoice` Python CLI must be on PATH (or
-   passed via `--sensevoice-cli`). See "Audio Transcription" above. bilitools
+   passed via `--sensevoice-cli`). See "Audio Transcription" above. bilicli
    will refuse with a clear error rather than silently no-op.
 
 9. **ASR may mangle proper nouns.** SenseVoiceSmall is a 240 M-param model; it
@@ -590,7 +590,7 @@ call those tools directly on the `.m4a` output.
    survive intact (SSNX, 095, 3D), but Chinese proper nouns and romanized
    foreign names are lossy. Treat transcripts as ~95% accurate, not 100%. If
    verbatim quoting matters, cross-check against the B 站 AI subtitles (which
-   bilitools already harvests in `harvest`).
+   bilicli already harvests in `harvest`).
 
 ## OCR (Optional — extract hard-coded text from images or video)
 
@@ -609,7 +609,7 @@ Use cases:
 ### Build
 
 ```bash
-cargo install --path /path/to/bilitools-cli --features ocr
+cargo install --path /path/to/bilicli --features ocr
 # or, from the repo:
 cargo build --release --features ocr
 ```
@@ -639,7 +639,7 @@ from a release tarball or build from a fresh clone.**
 
 Search order at runtime (first match wins):
 
-1. `$BILITOOLS_OCR_MODEL_DIR`
+1. `$BILICLI_OCR_MODEL_DIR`
 2. `<exe-dir>/models/ocr-fast/`
 3. `<exe-dir>/`
 4. `./models/ocr-fast/`
@@ -647,10 +647,10 @@ Search order at runtime (first match wins):
 
 If you want to override the bundled models (e.g. for a custom-trained
 charset), drop the three files into a directory of your choice and point
-`BILITOOLS_OCR_MODEL_DIR` at it:
+`BILICLI_OCR_MODEL_DIR` at it:
 
 ```bash
-export BILITOOLS_OCR_MODEL_DIR=/path/to/models/ocr-fast
+export BILICLI_OCR_MODEL_DIR=/path/to/models/ocr-fast
 ```
 
 Required filenames inside that directory:
@@ -663,18 +663,18 @@ Required filenames inside that directory:
 
 ```bash
 # Image OCR
-bilitools ocr screenshot.png
-bilitools --json ocr screenshot.png -o ./out
+bilicli ocr screenshot.png
+bilicli --json ocr screenshot.png -o ./out
 
 # Video OCR (extracts frames via ffmpeg, then OCRs each)
-bilitools ocr video.mp4 --video --interval 1.0
-bilitools ocr video.mp4 --video --interval 30 --max-frames 5
-bilitools --json ocr video.mp4 --video -o ./out
+bilicli ocr video.mp4 --video --interval 1.0
+bilicli ocr video.mp4 --video --interval 30 --max-frames 5
+bilicli --json ocr video.mp4 --video -o ./out
 
 # B 站 BV workflow: download the video first, then OCR it
-bilitools download submit BV1XBRuBSEd7 -o ./bv
-bilitools download run <task_id>
-bilitools ocr ./bv/<title>-<cid>.mp4 --video --interval 30 -o ./ocr
+bilicli download submit BV1XBRuBSEd7 -o ./bv
+bilicli download run <task_id>
+bilicli ocr ./bv/<title>-<cid>.mp4 --video --interval 30 -o ./ocr
 ```
 
 ### Flags (ocr subcommand)
@@ -724,13 +724,13 @@ Image mode is the same shape minus the `t_sec` / `video_path` fields.
 PP-OCRv5 mobile on a 1920×1080 frame: **~1.5 s/frame** on the WSL sandbox
 (12 vCPU). A 2-hour video at `--interval 1.0` = 7200 frames = ~3 hours wall
 time — tune `--interval` to taste. The engine caps at 3 threads by default;
-override with `BILITOOLS_OCR_THREADS`.
+override with `BILICLI_OCR_THREADS`.
 
 ### Common errors
 
 | Error message | Fix |
 |---------------|-----|
-| `bilitools: 'ocr' was not a subcommand` | binary was built without `--features ocr` |
+| `bilicli: 'ocr' was not a subcommand` | binary was built without `--features ocr` |
 | `OCR model files not found` | install the three MNN files per above |
 | `ffmpeg not found in PATH` | `sudo apt install ffmpeg` |
 | `libclang not found` at build time | `sudo apt install libclang-dev clang` |
@@ -750,35 +750,35 @@ override with `BILITOOLS_OCR_THREADS`.
 
 | What | Path |
 |------|------|
-| SQLite (cookies, tasks, settings) | `$XDG_DATA_HOME/com.btjawa.bilitools/Storage/storage.db` |
-| Override | `BILITOOLS_DATA_DIR=/tmp/foo` |
+| SQLite (cookies, tasks, settings) | `$XDG_DATA_HOME/com.btjawa.bilicli/Storage/storage.db` |
+| Override | `BILICLI_DATA_DIR=/tmp/foo` |
 | Config TOML | `<data_dir>/config.toml` |
 | Cookies (within DB) | `SELECT name, value FROM cookies WHERE name='SESSDATA'` |
 | Task logs (within DB) | `SELECT * FROM task_events WHERE task_id = '...'` |
-| Sidecar overrides | `BILITOOLS_SIDECAR_ARIA2C=/path/...` etc. |
+| Sidecar overrides | `BILICLI_SIDECAR_ARIA2C=/path/...` etc. |
 | Log level | `--log-level trace|debug|info|warn|error` (default `info`) |
 
 ## Quick Diagnostic Commands
 
 ```bash
 # Login state
-bilitools --json auth status | jq .data
+bilicli --json auth status | jq .data
 
 # Health check
-bilitools doctor
+bilicli doctor
 
 # Force-refresh fingerprint cookies
-bilitools init
+bilicli init
 
 # What is in HEADERS right now?
-bilitools --json auth status | jq '.data.cookies'
+bilicli --json auth status | jq '.data.cookies'
 ```
 
 ## When This Skill Should NOT Be Used
 
 - **Bulk scraping across many accounts** — B 站 will rate-limit. Use the official API
   or a higher-throughput tool.
-- **Re-encoding video** — `bilitools download` does `-c copy` (no re-encoding). For
+- **Re-encoding video** — `bilicli download` does `-c copy` (no re-encoding). For
   re-encoding (smaller files, different codec), post-process with ffmpeg directly.
 - **Live streaming downloads** — `live` is in the search type list, but the live stream
   download path is not part of this CLI. Use a different tool.
@@ -788,6 +788,6 @@ bilitools --json auth status | jq '.data.cookies'
 
 ## Source
 
-- GitHub: <https://github.com/nekobaimeow/bilitools-cli>
+- GitHub: <https://github.com/nekobaimeow/bilicli>
 - Upstream (GUI original): <https://github.com/btjawa/BiliTools>
 - License: GPL-3.0-or-later (inherited from BiliTools)

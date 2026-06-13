@@ -22,7 +22,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<std::path::PathBuf>,
 
-    /// Override the data directory (defaults to XDG_DATA_HOME/com.btjawa.bilitools).
+    /// Override the data directory (defaults to XDG_DATA_HOME/com.btjawa.bilicli).
     #[arg(long, global = true)]
     pub data_dir: Option<std::path::PathBuf>,
 
@@ -208,7 +208,7 @@ pub enum Command {
     Ocr {
         /// Image file path, or — with `--video` — a local video file.
         /// (B 站 BV/AV support requires you to download first; the error
-        /// message will tell you the exact `bilitools download` command.)
+        /// message will tell you the exact `bilicli download` command.)
         input: String,
         /// Treat `input` as a local video file. ffmpeg extracts frames
         /// at `--interval` spacing and OCRs each one.

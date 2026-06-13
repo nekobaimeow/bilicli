@@ -27,7 +27,7 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<(), CliError> {
 
     if !*no_login_warn && !danmaku::has_login_cookie().await {
         out.status(
-            "[warn] not logged in; live danmaku may be rate-limited. run `bilitools auth qrcode` first.",
+            "[warn] not logged in; live danmaku may be rate-limited. run `bilicli auth qrcode` first.",
         );
     }
 

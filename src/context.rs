@@ -40,7 +40,7 @@ impl AppContext {
         let paths = Paths::new()?;
         let data_dir = paths.data_dir();
         let log_dir = paths.log_dir();
-        let temp_dir = std::env::temp_dir().join("bilitools");
+        let temp_dir = std::env::temp_dir().join("bilicli");
         let config_path = paths.config_file();
         let db_path = paths.db_path();
 

@@ -8,7 +8,7 @@ use rustyline::history::FileHistory;
 use rustyline::Editor;
 
 pub async fn run(out: &Output) -> Result<(), CliError> {
-    println!("bilitools v{} (REPL)", env!("CARGO_PKG_VERSION"));
+    println!("bilicli v{} (REPL)", env!("CARGO_PKG_VERSION"));
     println!("type 'help' for commands, 'exit' or Ctrl-D to quit.");
 
     let history_path = dirs_history_path();
@@ -25,7 +25,7 @@ pub async fn run(out: &Output) -> Result<(), CliError> {
 
     let json_mode = matches!(out.mode, OutputMode::Json);
     loop {
-        let prompt = if json_mode { ">>> ".to_string() } else { "bilitools> ".to_string() };
+        let prompt = if json_mode { ">>> ".to_string() } else { "bilicli> ".to_string() };
         let line = match rl.readline(&prompt) {
             Ok(l) => l,
             Err(ReadlineError::Interrupted) => continue,
@@ -61,7 +61,7 @@ pub async fn run(out: &Output) -> Result<(), CliError> {
 fn print_help() {
     println!(
         "\
-bilitools REPL — available commands:
+bilicli REPL — available commands:
 
   help                     show this help
   exit / quit              leave the REPL
@@ -81,7 +81,7 @@ bilitools REPL — available commands:
   download submit <URL>    submit a download
   cache list               list cache directories
 
-Any bilitools subcommand can also be invoked by typing it directly.
+Any bilicli subcommand can also be invoked by typing it directly.
 "
     );
 }
@@ -89,7 +89,7 @@ Any bilitools subcommand can also be invoked by typing it directly.
 /// Dispatch a REPL line through the same code path as the CLI.
 async fn dispatch(line: &str) -> Result<(), CliError> {
     use clap::Parser;
-    let mut argv = vec!["bilitools".to_string()];
+    let mut argv = vec!["bilicli".to_string()];
     // Crude split: respect single-quoted strings.
     for tok in shell_split(line) {
         argv.push(tok);
@@ -131,6 +131,6 @@ fn shell_split(line: &str) -> Vec<String> {
 }
 
 fn dirs_history_path() -> Option<std::path::PathBuf> {
-    let base = directories::ProjectDirs::from("com", "btjawa", "bilitools")?;
+    let base = directories::ProjectDirs::from("com", "btjawa", "bilicli")?;
     Some(base.data_dir().join("repl_history"))
 }

@@ -36,7 +36,7 @@ pub async fn run() -> Result<DoctorReport, CliError> {
             name: "database".into(),
             ok: false,
             detail: format!("{e}"),
-            hint: Some("check BILITOOLS_DATA_DIR or filesystem permissions".into()),
+            hint: Some("check BILICLI_DATA_DIR or filesystem permissions".into()),
         }),
     }
 
@@ -210,10 +210,10 @@ async fn check_funasr() -> CheckResult {
 
 fn check_ocr_models() -> CheckResult {
     // Check the bundled models/ocr-fast/ directory (relative to the binary,
-    // or from env BILITOOLS_OCR_MODEL_DIR). At package time we ship
+    // or from env BILICLI_OCR_MODEL_DIR). At package time we ship
     // PP-OCRv5_mobile_det_fp16.mnn + PP-OCRv5_mobile_rec_fp16.mnn + ppocr_keys_v5.txt.
     let candidates = [
-        std::env::var("BILITOOLS_OCR_MODEL_DIR").ok().map(std::path::PathBuf::from),
+        std::env::var("BILICLI_OCR_MODEL_DIR").ok().map(std::path::PathBuf::from),
         std::env::current_dir().ok().map(|d| d.join("models/ocr-fast")),
         std::env::current_exe()
             .ok()
@@ -237,7 +237,7 @@ fn check_ocr_models() -> CheckResult {
         ok: false,
         detail: "PP-OCRv5 MNN models not found".into(),
         hint: Some(
-            "set BILITOOLS_OCR_MODEL_DIR=/path/to/models/ocr-fast\n  \
+            "set BILICLI_OCR_MODEL_DIR=/path/to/models/ocr-fast\n  \
              Models (det/rec fp16 MNN + keys) are bundled in the crate release archive."
                 .into(),
         ),

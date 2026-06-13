@@ -93,8 +93,8 @@ impl Settings {
         let data_dir = paths
             .as_ref()
             .map(|p| p.data_dir())
-            .unwrap_or_else(|| std::env::temp_dir().join("bilitools"));
-        let temp = std::env::temp_dir().join("bilitools");
+            .unwrap_or_else(|| std::env::temp_dir().join("bilicli"));
+        let temp = std::env::temp_dir().join("bilicli");
         let down = paths
             .as_ref()
             .map(|p| p.default_download_dir())
@@ -196,7 +196,7 @@ pub async fn write(settings: &Settings) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Read-modify-write. Convenient for `bilitools config set key value`.
+/// Read-modify-write. Convenient for `bilicli config set key value`.
 pub async fn update<F>(f: F) -> Result<Settings, CliError>
 where
     F: FnOnce(&mut Settings),
@@ -226,7 +226,7 @@ mod tests {
 
     async fn fresh() {
         let tmp = std::env::temp_dir().join(format!(
-            "bilitools-cli-cfg-{}",
+            "bilicli-cli-cfg-{}",
             uuid::Uuid::new_v4()
         ));
         db::set_data_dir(Some(tmp.clone())).unwrap();

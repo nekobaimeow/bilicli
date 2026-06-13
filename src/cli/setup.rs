@@ -161,14 +161,14 @@ pub async fn run(out: &Output) -> Result<(), CliError> {
             out.status("[✓] ocr_models: installed");
         } else {
             out.status("[✗] ocr_models: some models failed to download");
-            out.status("  → set BILITOOLS_OCR_MODEL_DIR=/path/to/models");
+            out.status("  → set BILICLI_OCR_MODEL_DIR=/path/to/models");
             ok = false;
         }
     }
 
     // ── Final ──
     if ok {
-        out.status("\n[✓] All dependencies ready. Run `bilitools analyze <BV>` to use.");
+        out.status("\n[✓] All dependencies ready. Run `bilicli analyze <BV>` to use.");
     } else {
         out.status("\n[!] Some dependencies could not be installed. See above for manual steps.");
     }
@@ -193,7 +193,7 @@ fn dirs_next() -> PathBuf {
 }
 
 fn find_or_create_ocr_models_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("BILITOOLS_OCR_MODEL_DIR") {
+    if let Ok(d) = std::env::var("BILICLI_OCR_MODEL_DIR") {
         return PathBuf::from(d);
     }
     let cwd = std::env::current_dir()
@@ -203,7 +203,7 @@ fn find_or_create_ocr_models_dir() -> PathBuf {
         return bundled;
     }
     // Create in user's local data dir
-    let data = dirs_next().join(".local/share/bilitools/models/ocr-fast");
+    let data = dirs_next().join(".local/share/bilicli/models/ocr-fast");
     let _ = std::fs::create_dir_all(&data);
     data
 }

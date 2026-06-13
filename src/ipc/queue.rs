@@ -292,7 +292,7 @@ fn derive_output_dir(task: &Task) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| String::from("."));
     PathBuf::from(home)
         .join("Downloads")
-        .join("bilitools")
+        .join("bilicli")
         .join(sanitize_dirname(&task.id))
 }
 

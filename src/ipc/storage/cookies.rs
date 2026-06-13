@@ -97,7 +97,7 @@ mod tests {
     /// Helper to create a fresh in-memory DB.
     async fn fresh_db() {
         let tmp = std::env::temp_dir().join(format!(
-            "bilitools-cli-test-{}",
+            "bilicli-cli-test-{}",
             uuid::Uuid::new_v4()
         ));
         db::set_data_dir(Some(tmp)).unwrap();

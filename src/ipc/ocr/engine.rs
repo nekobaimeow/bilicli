@@ -84,7 +84,7 @@ impl OcrEngine {
 }
 
 fn default_threads() -> i32 {
-    if let Ok(value) = std::env::var("BILITOOLS_OCR_THREADS") {
+    if let Ok(value) = std::env::var("BILICLI_OCR_THREADS") {
         if let Ok(n) = value.parse::<i32>() {
             return n.clamp(1, 8);
         }

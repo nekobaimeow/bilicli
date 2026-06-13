@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! `bilitools ocr` subcommand — offline OCR via PaddleOCR + MNN.
+//! `bilicli ocr` subcommand — offline OCR via PaddleOCR + MNN.
 //!
 //! Pipeline: ffmpeg frame extraction (video mode) → ocr-rs (PP-OCRv5
 //! mobile) recognition → JSON / human-readable output with confidence
@@ -405,7 +405,7 @@ async fn run_video(
 
 /// Resolve a video path. Today we only accept local files; B 站 BV/AV
 /// support requires the user to download first (we suggest the exact
-/// `bilitools download` command in the error message).
+/// `bilicli download` command in the error message).
 fn resolve_video_path(input: &str, output_dir: &PathBuf) -> Result<PathBuf, CliError> {
     let p = PathBuf::from(input);
     if p.is_file() {
@@ -417,10 +417,10 @@ fn resolve_video_path(input: &str, output_dir: &PathBuf) -> Result<PathBuf, CliE
         "video not found at local path: {input}\n\
          \n\
          If this is a B 站 BV / AV id or URL, first download it:\n  \
-           bilitools download {input} -o {}\n\
+           bilicli download {input} -o {}\n\
          \n\
          Then re-run:\n  \
-           bilitools ocr {input} --video -o {}",
+           bilicli ocr {input} --video -o {}",
         output_dir.display(),
         output_dir.display()
     )))

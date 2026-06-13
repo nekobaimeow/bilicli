@@ -3,7 +3,7 @@
 //!
 //! Search order (mirrors rpic's `offline_model_dirs`):
 //!
-//! 1. `$BILITOOLS_OCR_MODEL_DIR`
+//! 1. `$BILICLI_OCR_MODEL_DIR`
 //! 2. `<executable-dir>/models/ocr-fast/`
 //! 3. `<executable-dir>/`
 //! 4. `<cwd>/models/ocr-fast/`
@@ -78,7 +78,7 @@ pub fn find_model() -> Result<ModelPaths, String> {
         .join("\n");
     Err(format!(
         "OCR model files not found. Place a PaddleOCR/MNN model group in one of:\n{searched}\n\n\
-         Or set BILITOOLS_OCR_MODEL_DIR to your model directory. Recommended group:\n\
+         Or set BILICLI_OCR_MODEL_DIR to your model directory. Recommended group:\n\
            PP-OCRv5_mobile_det_fp16.mnn\n\
            PP-OCRv5_mobile_rec_fp16.mnn\n\
            ppocr_keys_v5.txt"
@@ -89,7 +89,7 @@ pub fn find_model() -> Result<ModelPaths, String> {
 fn model_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
 
-    if let Ok(raw) = std::env::var("BILITOOLS_OCR_MODEL_DIR") {
+    if let Ok(raw) = std::env::var("BILICLI_OCR_MODEL_DIR") {
         if !raw.trim().is_empty() {
             dirs.push(PathBuf::from(raw));
         }

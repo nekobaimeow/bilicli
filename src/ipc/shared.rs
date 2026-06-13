@@ -133,7 +133,7 @@ pub async fn init_client_inner(use_proxy: bool) -> Result<reqwest::Client, CliEr
     let mut builder = build_client_builder(&proxy, use_proxy)?;
     // Always refresh headers before building a client so the global
     // Cookie header is in sync with the SQLite cookie store. Without
-    // this, the first request after a fresh `bilitools` invocation
+    // this, the first request after a fresh `bilicli` invocation
     // ships an empty Cookie and authenticated endpoints (playurl,
     // nav) reject with -101 ("未登录").
     HEADERS.refresh().await?;
@@ -171,7 +171,7 @@ pub fn random_string(len: usize) -> String {
 
 /// Equivalent of `tauri::AppHandle.path().temp_dir()`.
 pub fn temp_dir() -> PathBuf {
-    std::env::temp_dir().join("bilitools")
+    std::env::temp_dir().join("bilicli")
 }
 
 pub fn ensure_temp_dir() -> std::io::Result<()> {
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn temp_dir_is_bilitools_named() {
         let p = temp_dir();
-        assert!(p.ends_with("bilitools"));
+        assert!(p.ends_with("bilicli"));
     }
 
     // =====================  WBI signing  =====================

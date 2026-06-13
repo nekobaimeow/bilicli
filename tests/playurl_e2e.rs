@@ -12,8 +12,8 @@
 //! stub the path by having the wiremock server return a fake aria2
 //! response. This is a "shape" test, not a full E2E.
 
-use bilitools::ipc::playurl::{self, PlayUrlManifest, DashManifest, DashStream, DurlEntry, SegmentKind};
-use bilitools::ipc::shared::compute_mixin_key;
+use bilicli::ipc::playurl::{self, PlayUrlManifest, DashManifest, DashStream, DurlEntry, SegmentKind};
+use bilicli::ipc::shared::compute_mixin_key;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

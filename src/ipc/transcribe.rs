@@ -2,10 +2,10 @@
 // Local ASR (automatic speech recognition) via external `sensevoice` CLI.
 //
 // Why a separate Python CLI?
-//   bilitools is pure Rust; the upstream SenseVoiceSmall model runs on
+//   bilicli is pure Rust; the upstream SenseVoiceSmall model runs on
 //   PyTorch + FunASR which is hundreds of MB of Python deps. We avoid
 //   dragging that into the Rust binary. Instead, when the user passes
-//   `bilitools audio <bv> --transcribe`, this module shells out to a
+//   `bilicli audio <bv> --transcribe`, this module shells out to a
 //   Python `sensevoice` CLI that they install separately.
 //
 // Contract (sensevoice-skill, MIT licensed):

@@ -1,6 +1,6 @@
 # Test Plan
 
-This document describes the testing strategy for `bilitools`. Three test
+This document describes the testing strategy for `bilicli`. Three test
 layers exist; each corresponds to a different level of integration.
 
 ## Running tests
@@ -57,11 +57,11 @@ and are marked `#[ignore]` until the full CLI integration is finalized.
 
 | Test | What it does |
 |---|---|
-| `test_info_subcommand` | `bilitools info` exits 0 and prints version + paths |
-| `test_config_show_roundtrip` | `bilitools config set` then `config get` returns the new value |
-| `test_parse_url_mocked` | `wiremock` returns a fake view API response, `bilitools parse url` decodes it |
-| `test_auth_status` | `bilitools auth status` returns a valid JSON object with `logged_in: false` |
-| `test_db_export_import` | `bilitools db export` writes a SQLite file, `bilitools db import` re-loads it |
+| `test_info_subcommand` | `bilicli info` exits 0 and prints version + paths |
+| `test_config_show_roundtrip` | `bilicli config set` then `config get` returns the new value |
+| `test_parse_url_mocked` | `wiremock` returns a fake view API response, `bilicli parse url` decodes it |
+| `test_auth_status` | `bilicli auth status` returns a valid JSON object with `logged_in: false` |
+| `test_db_export_import` | `bilicli db export` writes a SQLite file, `bilicli db import` re-loads it |
 | `test_repl_dispatch` | Spawn the REPL on stdin, type `exit`, assert clean shutdown |
 
 ## Layer 3: End-to-end tests (planned, in `tests/e2e/`)
@@ -71,7 +71,7 @@ Marked `#[ignore]` so they don't run on CI.
 
 | Test | What it does |
 |---|---|
-| `test_login_qrcode` | `bilitools auth qrcode`, scan with a real phone, confirm `bilitools auth status` shows logged in |
+| `test_login_qrcode` | `bilicli auth qrcode`, scan with a real phone, confirm `bilicli auth status` shows logged in |
 | `test_parse_real_bv` | Parse a real BV id (e.g. BV1GJ411x7h7) and check the title matches the page |
 | `test_parse_real_favorite` | Parse a real favorite folder |
 | `test_submit_video_dry` | Submit a small (240p) video download and wait for the aria2c task to complete |

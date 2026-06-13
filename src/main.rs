@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// bilitools-cli binary entry point.
+// bilicli binary entry point.
 
-use bilitools::cli::output::{Output, OutputMode};
-use bilitools::cli::root::{Cli, Command};
-use bilitools::cli::{setup, analyze, audio, auth, cache, config as cfg, danmaku, db as dbcmd, download, harvest, info, parse as par, repl, review, schedule, search, subtitle};
-use bilitools::cli::ocr;
-use bilitools::context;
-use bilitools::doctor;
-use bilitools::error::CliError;
+use bilicli::cli::output::{Output, OutputMode};
+use bilicli::cli::root::{Cli, Command};
+use bilicli::cli::{setup, analyze, audio, auth, cache, config as cfg, danmaku, db as dbcmd, download, harvest, info, parse as par, repl, review, schedule, search, subtitle};
+use bilicli::cli::ocr;
+use bilicli::context;
+use bilicli::doctor;
+use bilicli::error::CliError;
 use clap::Parser;
 
 fn main() {
@@ -18,7 +18,7 @@ fn main() {
 
     // 2. Apply data-dir override if requested
     if let Some(d) = &cli.data_dir {
-        bilitools::ipc::storage::db::set_data_dir(Some(d.clone()))
+        bilicli::ipc::storage::db::set_data_dir(Some(d.clone()))
             .expect("set_data_dir");
     }
 
@@ -89,8 +89,8 @@ async fn cmd_init(out: &Output) -> Result<(), CliError> {
     // (see `AppContext::build`); this command now exists as a no-op alias
     // for backwards compatibility and to give the user a way to re-warm
     // the fingerprint after a long idle period.
-    bilitools::ipc::shared::HEADERS.refresh().await?;
-    let cookie = bilitools::ipc::shared::HEADERS.cookie().await;
+    bilicli::ipc::shared::HEADERS.refresh().await?;
+    let cookie = bilicli::ipc::shared::HEADERS.cookie().await;
     let summary = if cookie.contains("SESSDATA=") {
         "logged in + fingerprint present"
     } else {
@@ -102,6 +102,6 @@ async fn cmd_init(out: &Output) -> Result<(), CliError> {
 fn init_logging(level: &str, _json: bool) {
     use tracing_subscriber::{fmt, EnvFilter};
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("bilitools={level},bilitools_cli={level}")));
+        .unwrap_or_else(|_| EnvFilter::new(format!("bilicli={level}")));
     fmt().with_env_filter(filter).with_target(false).init();
 }

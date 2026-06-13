@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// bilitools-cli library entry point.
+// bilicli library entry point.
 // Public API exposed to integration tests; binary entry is in main.rs.
 
 pub mod backends;

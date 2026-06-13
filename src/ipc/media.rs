@@ -78,7 +78,7 @@ pub fn parse(input: &str) -> Result<ResourceRef, CliError> {
         return Err(CliError::InvalidUrl("empty input".into()));
     }
 
-    // Bare BV — `bilitools parse BV1xx411c7mD`
+    // Bare BV — `bilicli parse BV1xx411c7mD`
     if let Some(bv) = trimmed.strip_prefix("BV") {
         if bv.chars().all(|c| c.is_ascii_alphanumeric()) && bv.len() >= 9 {
             return Ok(ResourceRef::new(ResourceKind::Video, trimmed));

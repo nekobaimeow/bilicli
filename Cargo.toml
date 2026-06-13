@@ -1,23 +1,23 @@
 [package]
-name = "bilitools"
+name = "bilicli"
 version = "1.5.0"
 edition = "2021"
-description = "A pure-Rust CLI port of BiliTools, the Bilibili toolbox. Reuses the original Rust business logic (login, aria2, ffmpeg, queue, storage) with the Tauri GUI layer stripped out."
-homepage = "https://github.com/nekobaimeow/bilitools-cli"
-repository = "https://github.com/nekobaimeow/bilitools-cli"
+description = "A multi-platform video toolkit CLI — download, analyze, transcribe, OCR subtitles. Born from BiliTools, expanding to YouTube, TikTok, and beyond."
+homepage = "https://github.com/nekobaimeow/bilicli"
+repository = "https://github.com/nekobaimeow/bilicli"
 license = "GPL-3.0-or-later"
-authors = ["btjawa", "bilitools-cli contributors"]
+authors = ["btjawa", "bilicli contributors"]
 keywords = ["bilibili", "downloader", "cli", "tauri"]
 categories = ["command-line-utilities", "multimedia", "network"]
 readme = "README.md"
 rust-version = "1.80"
 
 [lib]
-name = "bilitools"
+name = "bilicli"
 path = "src/lib.rs"
 
 [[bin]]
-name = "bilitools"
+name = "bilicli"
 path = "src/main.rs"
 
 [dependencies]

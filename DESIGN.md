@@ -7,7 +7,7 @@
 ## 1. Crate 拓扑
 
 ```
-bilitools-cli/                       # binary crate, name = "bilitools"
+bilicli/                       # binary crate, name = "bilicli"
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs                       # 入口
@@ -72,7 +72,7 @@ bilitools-cli/                       # binary crate, name = "bilitools"
 
 **直接沿用 BiliTools 的依赖 + 增删：**
 
-| 类别 | BiliTools | bilitools-cli | 理由 |
+| 类别 | BiliTools | bilicli | 理由 |
 |---|---|---|---|
 | 异步 | `tokio 1.48` | `tokio 1` | 同 |
 | HTTP | `tauri_plugin_http::reqwest` | `reqwest 0.12` | 解耦 tauri |
@@ -100,7 +100,7 @@ bilitools-cli/                       # binary crate, name = "bilitools"
 ## 3. CLI 命令树（clap）
 
 ```
-bilitools [OPTIONS] [COMMAND]
+bilicli [OPTIONS] [COMMAND]
 
 OPTIONS:
     -j, --json              # 机器可读 JSON 输出（所有子命令）
@@ -171,7 +171,7 @@ COMMANDS:
 
 ```rust
 pub struct AppContext {
-    pub data_dir: PathBuf,        // XDG_DATA_HOME/com.btjawa.bilitools
+    pub data_dir: PathBuf,        // XDG_DATA_HOME/com.btjawa.bilicli
     pub log_dir: PathBuf,
     pub temp_dir: PathBuf,
     pub config_path: PathBuf,
@@ -188,7 +188,7 @@ pub struct AppContext {
 沿用 BiliTools 全部 schema：
 - `cookies`, `tasks`, `queue`, `schedulers`, `settings`（JSON blob）
 
-CLI 数据库路径与 GUI 一致（Linux: `$XDG_DATA_HOME/com.btjawa.bilitools/Storage/storage.db`），支持**与 GUI 版数据互通**。
+CLI 数据库路径与 GUI 一致（Linux: `$XDG_DATA_HOME/com.btjawa.bilicli/Storage/storage.db`），支持**与 GUI 版数据互通**。
 
 ### 4.3 跨进程
 
@@ -232,7 +232,7 @@ impl Output {
   "ok": false,
   "error": {
     "code": "AUTH_REQUIRED",
-    "message": "未登录，请先运行 `bilitools auth qrcode`",
+    "message": "未登录，请先运行 `bilicli auth qrcode`",
     "context": { "hint": "..." }
   }
 }
@@ -241,34 +241,34 @@ impl Output {
 ## 6. REPL 设计
 
 ```
-$ bilitools repl
-bilitools v1.4.7-cli (rev: 0a19072)
+$ bilicli repl
+bilicli v1.4.7-cli (rev: 0a19072)
 Type 'help' for commands. Ctrl-D or 'exit' to quit.
 
-bilitools> auth status
+bilicli> auth status
 {
   "logged_in": false,
   "user": null,
   "cookies": ["buvid3", "buvid4", "_uuid", "bili_ticket"]
 }
 
-bilitools> config set max_conc 4
+bilicli> config set max_conc 4
 OK
 
-bilitools> download submit "https://www.bilibili.com/video/BV1xx411c7mD"
+bilicli> download submit "https://www.bilibili.com/video/BV1xx411c7mD"
 {
   "task_id": "abc123",
   "status": "queued",
   "type": "AudioVideo"
 }
 
-bilitools> exit
+bilicli> exit
 $
 ```
 
 **实现要点：**
 - 用 `rustyline` 提供行编辑 + 历史
-- 历史持久化到 `$XDG_DATA_HOME/bilitools/repl_history`
+- 历史持久化到 `$XDG_DATA_HOME/bilicli/repl_history`
 - 子命令解析：直接 `clap::Command::try_get_matches_from_mut`
 - 错误用红字，成功用绿字（`--no-color` 关）
 - 长任务用 `>>>` 提示行尾显示 spinner
@@ -308,7 +308,7 @@ pub struct SettingsSidecar {
 }
 ```
 
-**Config get/set 路径用点号：** `bilitools config set sidecar.ffmpeg /usr/local/bin/ffmpeg`
+**Config get/set 路径用点号：** `bilicli config set sidecar.ffmpeg /usr/local/bin/ffmpeg`
 
 ## 8. 错误类型
 
@@ -369,16 +369,16 @@ pub type CliResult<T> = Result<T, CliError>;
 | SQLite DB | ✅ 同路径 | CLI 写 = GUI 读 |
 | 下载目录 | ✅ 同路径 | `down_dir` 配置一致 |
 | 临时文件 | ✅ 同路径 | `temp_dir` 配置一致 |
-| 日志 | ⚠️ 独立 | CLI 写到 `$XDG_DATA_HOME/bilitools/logs/`，GUI 写到 app_log_dir |
+| 日志 | ⚠️ 独立 | CLI 写到 `$XDG_DATA_HOME/bilicli/logs/`，GUI 写到 app_log_dir |
 | 配置 | ✅ 共享 | 都从 SQLite `settings` 表读 |
 
 ## 11. 入口行为
 
 ```
-bilitools                  # 默认 → repl
-bilitools <subcommand>     # 执行子命令
-bilitools --version        # 版本
-bilitools --help           # clap 自动 help
+bilicli                  # 默认 → repl
+bilicli <subcommand>     # 执行子命令
+bilicli --version        # 版本
+bilicli --help           # clap 自动 help
 ```
 
 信号处理：SIGINT 触发优雅退出（取消当前 task，关闭 aria2 子进程）。

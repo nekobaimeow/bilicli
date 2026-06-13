@@ -15,17 +15,17 @@ use std::time::Duration;
 
 /// Global pool is wrapped in a `Mutex<Option<_>>` so tests can reset it
 /// between runs (OnceCell cannot be cleared, which would otherwise leak
-/// the pool across parallel tests using different `BILITOOLS_DATA_DIR`).
+/// the pool across parallel tests using different `BILICLI_DATA_DIR`).
 static DB: Lazy<Mutex<Option<SqlitePool>>> = Lazy::new(|| Mutex::new(None));
 
 /// Module-level override for the data directory. Tests set this via
-/// `set_data_dir()` to avoid racing on `BILITOOLS_DATA_DIR`.
+/// `set_data_dir()` to avoid racing on `BILICLI_DATA_DIR`.
 static DATA_DIR_OVERRIDE: Lazy<Mutex<Option<std::path::PathBuf>>> =
     Lazy::new(|| Mutex::new(None));
 
 /// Path to the SQLite database file. Shared with the GUI version.
 /// Honors a process-wide override set by `set_data_dir()`; otherwise
-/// falls back to `Paths::new()` which reads `BILITOOLS_DATA_DIR`.
+/// falls back to `Paths::new()` which reads `BILICLI_DATA_DIR`.
 pub fn db_path() -> std::path::PathBuf {
     if let Some(p) = DATA_DIR_OVERRIDE
         .lock()
@@ -36,12 +36,12 @@ pub fn db_path() -> std::path::PathBuf {
     }
     Paths::new()
         .map(|p| p.db_path())
-        .unwrap_or_else(|_| std::env::temp_dir().join("bilitools/storage.db"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("bilicli/storage.db"))
 }
 
 /// Set the data directory used by the global DB pool. After calling
 /// this, `db_path()`, `init()`, etc. all use the given directory.
-/// Pass `None` to clear the override (revert to `BILITOOLS_DATA_DIR` env
+/// Pass `None` to clear the override (revert to `BILICLI_DATA_DIR` env
 /// or the default).
 pub fn set_data_dir(data_dir: Option<std::path::PathBuf>) -> Result<(), CliError> {
     let mut g = DATA_DIR_OVERRIDE
@@ -198,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn init_creates_db_file() {
         let tmp = std::env::temp_dir().join(format!(
-            "bilitools-cli-db-{}",
+            "bilicli-cli-db-{}",
             uuid::Uuid::new_v4()
         ));
         dbmod::set_data_dir(Some(tmp.clone())).unwrap();
@@ -213,7 +213,7 @@ mod tests {
     #[tokio::test]
     async fn init_is_idempotent() {
         let tmp = std::env::temp_dir().join(format!(
-            "bilitools-cli-db2-{}",
+            "bilicli-cli-db2-{}",
             uuid::Uuid::new_v4()
         ));
         dbmod::set_data_dir(Some(tmp.clone())).unwrap();

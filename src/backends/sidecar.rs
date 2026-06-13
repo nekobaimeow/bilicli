@@ -3,8 +3,8 @@
 //
 // In the GUI version, aria2c/ffmpeg/DanmakuFactory are bundled as Tauri sidecars.
 // In the CLI version, we look them up via:
-//   1. explicit path in `bilitools config show sidecar.<name>`
-//   2. `$BILITOOLS_SIDECAR_<NAME>` env var
+//   1. explicit path in `bilicli config show sidecar.<name>`
+//   2. `$BILICLI_SIDECAR_<NAME>` env var
 //   3. `which` lookup
 //   4. common well-known paths
 //
@@ -32,9 +32,9 @@ impl SidecarKind {
     }
     pub fn env_var(self) -> &'static str {
         match self {
-            SidecarKind::Aria2c => "BILITOOLS_SIDECAR_ARIA2C",
-            SidecarKind::FFmpeg => "BILITOOLS_SIDECAR_FFMPEG",
-            SidecarKind::DanmakuFactory => "BILITOOLS_SIDECAR_DANMAKU",
+            SidecarKind::Aria2c => "BILICLI_SIDECAR_ARIA2C",
+            SidecarKind::FFmpeg => "BILICLI_SIDECAR_FFMPEG",
+            SidecarKind::DanmakuFactory => "BILICLI_SIDECAR_DANMAKU",
         }
     }
 }
@@ -178,18 +178,18 @@ mod tests {
 
     #[test]
     fn sidecar_kind_env_var() {
-        assert_eq!(SidecarKind::Aria2c.env_var(), "BILITOOLS_SIDECAR_ARIA2C");
-        assert_eq!(SidecarKind::FFmpeg.env_var(), "BILITOOLS_SIDECAR_FFMPEG");
+        assert_eq!(SidecarKind::Aria2c.env_var(), "BILICLI_SIDECAR_ARIA2C");
+        assert_eq!(SidecarKind::FFmpeg.env_var(), "BILICLI_SIDECAR_FFMPEG");
         assert_eq!(
             SidecarKind::DanmakuFactory.env_var(),
-            "BILITOOLS_SIDECAR_DANMAKU"
+            "BILICLI_SIDECAR_DANMAKU"
         );
     }
 
     #[test]
     fn resolve_via_env_var() {
         let tmp = std::env::temp_dir().join(format!(
-            "bilitools-cli-sidecar-{}",
+            "bilicli-sidecar-{}",
             uuid::Uuid::new_v4()
         ));
         std::fs::create_dir_all(&tmp).unwrap();

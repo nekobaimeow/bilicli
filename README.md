@@ -1,276 +1,226 @@
-# bilitools — A pure-Rust CLI port of [BiliTools](https://github.com/btjawa/BiliTools)
 
-> 简体中文 | [English](#english)
+<p align="center">
+  <img src="https://img.shields.io/crates/v/bilicli?style=flat-square&color=success" alt="crates.io">
+  <img src="https://img.shields.io/github/license/nekobaimeow/bilicli?style=flat-square" alt="license">
+  <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust">
+</p>
 
-`bilitools` 是一个 100% Rust 实现的命令行工具，复刻了 BiliTools（一个跨平台 Bilibili 工具箱）的功能。
-**我们直接复用了 BiliTools 5,464 行 Rust 业务代码**（登录 / aria2c / ffmpeg / 队列 / 解析 / 数据库），
-只是把 Tauri GUI 框架剥掉，改成 clap 命令行界面。
+# bilicli — Multi-Platform Video Toolkit CLI
 
-这意味着：
-- ✅ 相同的 B 站 API 集成（WBI 签名、Buvid 指纹、扫码登录、Cookie 持久化）
-- ✅ 相同的 aria2c RPC 下载后端
-- ✅ 相同的 ffmpeg 媒体后处理
-- ✅ 相同的 SQLite 任务队列 — **与 GUI 版数据库互通**
-- ✅ 同样的 GPL-3.0-or-later 协议（上游强制）
-- ❌ 没有 Tauri 窗口、主题、剪贴板监听、单实例
+> *Born from BiliTools. Expanding to the world.*
 
-## 快速开始
+`bilicli` is a **100% Rust** CLI toolkit for video platforms — download, analyze, transcribe, OCR,
+and batch-harvest video metadata. It started as a pure CLI port of
+[BiliTools](https://github.com/btjawa/BiliTools) but has grown into its own project with an
+ambitious multi-platform roadmap.
 
-### 1. 编译安装
+🔹 **简体中文** · 🔹 **[English](#english)** · 🔹 **[日本語](#japanese)**
 
-```bash
-git clone https://github.com/nekobaimeow/bilitools-cli
-cd bilitools-cli
-cargo install --path .
-```
+---
 
-需要 Rust 1.80+。
+## 简体中文
 
-### 2. 安装系统依赖
-
-`bilitools` 复用三个外部命令（GUI 版用 Tauri 打包 sidecar；CLI 版用系统包）：
+### 🚀 Quickstart
 
 ```bash
-# Debian / Ubuntu
-sudo apt install aria2 ffmpeg
+# 安装 (via crates.io)
+cargo install bilicli
 
-# macOS
-brew install aria2 ffmpeg
-
-# Arch
-sudo pacman -S aria2 ffmpeg
+# 或从源码编译
+git clone https://github.com/nekobaimeow/bilicli
+cd bilicli
+cargo build --release
 ```
 
-可选：DanmakuFactory（弹幕 XML→ASS 转换）：
-- 下载：<https://github.com/hihkm/DanmakuFactory/releases>
-- 放到 `PATH` 里的某个位置
+### 📋 系统依赖
 
-### 3. 验证
+`bilicli` 需要三个外部工具，请用系统包管理器安装：
+
+| 工具 | 用途 | 安装 |
+|------|------|------|
+| **aria2c** | 多线程下载 | `apt install aria2` / `brew install aria2` |
+| **ffmpeg** | 音视频合并 | `apt install ffmpeg` / `brew install ffmpeg` |
+| **python3** | ASR 语音转文字 | `apt install python3` / 通常已安装 |
 
 ```bash
-bilitools --version
-bilitools doctor
+# 一键体检
+bilicli doctor
+
+# 自动安装 ASR 模型 + 依赖
+bilicli setup
 ```
 
-`doctor` 会检查 aria2/ffmpeg/DanmakuFactory 是否就绪 + B 站 API 是否可达。
-
-### 4. 登录
-
-扫码登录（推荐，B 站风控最稳定）：
+### 🎯 核心功能
 
 ```bash
-# 生成二维码 + 写到 ./qr.png + 输出 qrcode_key
-bilitools auth qrcode --output ./qr.png --json
+# 扫码登录 B 站
+bilicli auth qrcode
 
-# 用手机 B 站扫一下
-xdg-open ./qr.png  # 或在手机上扫
+# 下载视频
+bilicli download submit "https://www.bilibili.com/video/BV1xx411c7mD" --quality 80
 
-# 然后轮询登录状态（可以用 QR-key 在 REPL 里持续轮询）
-bilitools auth qrcode-poll <qrcode_key>
+# 全量分析：ASR 语音识别 + 弹幕 + 字幕 + 评论 + OCR 逐帧字幕
+bilicli analyze BV1xx411c7mD
+
+# 离线 OCR（提取视频硬字幕）
+bilicli ocr input.mp4 --video
+
+# 弹幕导出
+bilicli danmaku BV1xx411c7mD --format xml -o ./danmaku.xml
+
+# 批量采集
+bilicli harvest --search "原神 演示" --limit 50
 ```
 
-> CLI 不会自动把二维码弹窗。你需要自己用手机扫 PNG/URL。
+### 🗺️ Roadmap
 
-### 5. 解析 / 下载
+| 状态 | 功能 |
+|------|------|
+| ✅ 已完成 | Bilibili 全功能（下载/弹幕/评论/字幕/ASR/OCR/REPL） |
+| 🔨 开发中 | YouTube 支持 |
+| 📋 计划中 | TikTok（抖音）、Niconico |
+| 📋 计划中 | Google Drive / 百度网盘 / 夸克网盘 云端存储集成 |
+| 💭 探索中 | 跨平台搜索、P2P 分发 |
 
-```bash
-# 解析一个 BV 号（不发请求，纯 URL 分类）
-bilitools parse bv BV1xx411c7mD
-
-# 解析一个番剧 SS 号
-bilitools parse url "https://www.bilibili.com/bangumi/play/ss28280"
-
-# 提交下载（写入数据库 + 拉取 view 元数据）
-bilitools download submit "https://www.bilibili.com/video/BV1xx411c7mD" --quality 80 --output-dir ~/Videos
-
-# 真下载 — 启动 aria2c RPC daemon + 下载 DASH 段 + ffmpeg 合并 mp4
-bilitools download run <task_id>
-
-# 列出所有任务
-bilitools download list
-
-# 取消
-bilitools download cancel <task_id>
-
-# 重试失败 / 已完成（会先看磁盘文件，aria2c 自动续传）
-bilitools download retry <task_id>
-```
-
-**断点续传**：aria2c 启动时带 `--continue=true --check-integrity=true --max-tries=0`。
-如果某个分片（视频 / 音频 m4s）下载途中被杀，再 `bilitools download run` 同一 task，
-aria2c 会用 HTTP Range 请求把缺失的字节范围续上，最后 ffmpeg 合并成 mp4。
-
-E2E 验证（BV1ZvEt6oEWR 锐评 2026 数学高考，738 秒单 P）：
-- 完整下载：19 秒，~31 MB
-- 中断后重下（100 KB 残片）：7 秒，`resumed: true`，ffprobe 验证可播放
-
-### 6. 配置
-
-```bash
-bilitools config show
-bilitools config get max_conc
-bilitools config set max_conc 4
-bilitools config set sidecar.aria2c /usr/bin/aria2c
-```
-
-### 7. REPL
-
-```bash
-bilitools repl
-```
-
-进入交互模式（`>>>` 提示符，支持历史），可以连续跑命令。
-
-## 命令参考
+### 📁 数据目录
 
 ```
-bilitools [OPTIONS] [COMMAND]
-
-Options:
-    -j, --json                   机器可读 JSON 输出
-    --config <FILE>              配置文件路径
-    --data-dir <DIR>             数据目录覆盖
-    --log-level <LEVEL>          trace|debug|info|warn|error
-    --no-color                   关闭 ANSI 颜色
-    --doctor                     启动前健康检查
-
-Commands:
-  info      版本 + 路径
-  init      初始化环境（buvid3/buvid4/ticket/uuid）
-  auth      认证（qrcode / qrcode-poll / status / refresh / exit）
-  parse     解析（不下载）：url / bv / av / bangumi / episode / fav / watchlater / user
-  download  下载：submit / batch / list / show / cancel / pause / resume / retry / open
-  schedule  计划任务：list / add / remove / run
-  config    show / get / set / reset / path
-  cache     list / size / clean / open
-  db        export / import / tasks
-  doctor    健康检查
-  repl      交互式 REPL
+Linux:   $XDG_DATA_HOME/com.btjawa.bilicli/
+macOS:   ~/Library/Application Support/com.btjawa.bilicli/
+Windows: %AppData%\com.btjawa.bilicli\
 ```
 
-每个子命令支持 `--help` 看细节：`bilitools download --help`。
+### 📝 致谢
 
-## JSON 输出
+本项目脱胎于 [btjawa/BiliTools](https://github.com/btjawa/BiliTools) — 致敬原作者的开创性工作。
+bilicli 复用了其 Rust 业务逻辑（登录、aria2c、ffmpeg、队列、数据库）并拓展了 OCR、ASR、
+及多平台兼容能力。
 
-所有子命令支持 `--json` 标志，输出统一信封：
-
-```json
-{
-  "ok": true,
-  "data": { ... }
-}
-```
-
-错误时：
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "NOT_LOGGED_IN",
-    "message": "请先运行 `bilitools auth qrcode`"
-  }
-}
-```
-
-错误码列表（稳定，可编程处理）：`CONFIG / AUTH / NETWORK / DATABASE / IO / SERDE / API / HTTP / NOT_LOGGED_IN / INVALID_URL / MISSING_DEPENDENCY / PATH_NOT_FOUND / PARSE / TASK_NOT_FOUND / CANCELLED / OTHER`。
-
-## 数据目录
-
-跨平台一致：
-
-- Linux: `$XDG_DATA_HOME/com.btjawa.bilitools/`
-- macOS: `~/Library/Application Support/com.btjawa.bilitools/`
-- Windows: `%AppData%\com.btjawa.bilitools\`
-
-子目录：
-
-```
-Storage/storage.db      # SQLite 主数据库（与 GUI 版互通）
-logs/                   # CLI 日志
-cache/                  # 通用缓存
-runtime/                # 临时 runtime 文件（如 aria2 socket）
-```
-
-可用 `BILITOOLS_DATA_DIR` 环境变量或 `--data-dir` 标志覆盖。
-
-## 开发
-
-```bash
-# 跑全部测试
-cargo test -- --test-threads=1
-
-# 跑单个模块
-cargo test --lib storage::cookies
-cargo test --lib ipc::media
-
-# 端到端测试（需要登录态，标了 #[ignore]）
-cargo test --lib -- --ignored
-
-# 实时日志
-RUST_LOG=bilitools=debug cargo run -- doctor
-```
-
-## 协议
-
-GPL-3.0-or-later — 与上游 BiliTools 一致。
-
-## 致谢
-
-- [btjawa/BiliTools](https://github.com/btjawa/BiliTools) — 5,464 行 Rust 业务代码
-- [SocialSisterYi/bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect) — B 站 API 文档
-- [aria2](https://github.com/aria2/aria2) / [FFmpeg](https://ffmpeg.org/) / [DanmakuFactory](https://github.com/hihkm/DanmakuFactory) — 底层工具
+感谢所有贡献者和开源生态。
 
 ---
 
 ## English
 
-`bilitools` is a 100% Rust CLI port of BiliTools. It reuses the original Rust
-business logic (5,464 LOC of login / aria2c / ffmpeg / queue / parsing / DB
-code) with the Tauri GUI layer replaced by clap subcommands.
-
-### Install
+### 🚀 Quickstart
 
 ```bash
-git clone https://github.com/nekobaimeow/bilitools-cli
-cd bilitools-cli
-cargo install --path .
+# Install via crates.io
+cargo install bilicli
 
-# Install aria2 + ffmpeg
-sudo apt install aria2 ffmpeg
+# Or build from source
+git clone https://github.com/nekobaimeow/bilicli
+cd bilicli
+cargo build --release
 ```
 
-### Quick start
+### 📋 Dependencies
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| **aria2c** | Multi-threaded download | `apt install aria2` / `brew install aria2` |
+| **ffmpeg** | Audio/video muxing | `apt install ffmpeg` / `brew install ffmpeg` |
+| **python3** | ASR speech-to-text | `apt install python3` (usually pre-installed) |
 
 ```bash
-bilitools doctor
-bilitools auth qrcode --output ./qr.png
-# scan with B 站 app on your phone, then:
-bilitools auth qrcode-poll <qrcode_key>
-bilitools parse bv BV1xx411c7mD
-bilitools download list
+# Health check
+bilicli doctor
+
+# Auto-install ASR models & Python deps
+bilicli setup
 ```
 
-### Documentation
+### 🎯 Features
 
-- `ANALYSIS.md` — GUI→API mapping and design rationale
-- `DESIGN.md` — architecture, command tree, state model
-- `TEST.md` — test plan and how to run
-- `SKILL.md` — agent-facing description (for `npx skills add`)
+```bash
+bilicli auth qrcode          # QR login to Bilibili
+bilicli download submit <url>  # Download video
+bilicli analyze <BV>         # Full analysis: ASR + danmaku + subs + comments + OCR
+bilicli ocr input.mp4 --video # Offline OCR (extract hardcoded subtitles)
+bilicli danmaku <BV>         # Export danmaku (xml/json/ass)
+bilicli harvest --search <q> # Batch collect search results
+bilicli repl                 # Interactive shell
+```
 
-### License
+### 🗺️ Roadmap
 
-GPL-3.0-or-later (inherited from BiliTools).
+| Status | Feature |
+|--------|---------|
+| ✅ Done | Bilibili full stack (download, danmaku, comments, subs, ASR, OCR, REPL) |
+| 🔨 WIP | YouTube support |
+| 📋 Planned | TikTok, Niconico |
+| 📋 Planned | Cloud storage: Google Drive, Baidu Netdisk, Quark Netdisk |
+| 💭 Exploring | Cross-platform search, P2P distribution |
 
-### Acknowledgements
+### 🙏 Credits
 
-- **[btjawa/BiliTools](https://github.com/btjawa/BiliTools)** — the upstream
-  Tauri/Vue GUI tool. Almost all of `bilitools-cli's` business logic
-  (WBI signing, aria2c RPC, ffmpeg wrappers, SQLite schema, queue,
-  schedulers, login) is a direct port of BiliTools' Rust source.
-- **[HKUDS/CLI-Anything](https://github.com/HKUDS/CLI-Anything)** — the
-  agentic CLI-replication framework (7-phase SOP: ANALYSIS → DESIGN →
-  IMPLEMENT → TEST → DOCUMENT → RELEASE → VERIFY) that produced this
-  project. See `ANALYSIS.md` and `DESIGN.md` for the full planning
-  artifacts.
-- **Bilibili** — for the public API used by both BiliTools and this CLI.
+This project is derived from [btjawa/BiliTools](https://github.com/btjawa/BiliTools).
+We reuse its Rust business logic and extend it with OCR, ASR, and multi-platform ambitions.
+Deep gratitude to the original author and all open-source contributors.
+
+---
+
+## 日本語
+
+### 🚀 クイックスタート
+
+```bash
+# crates.io からインストール
+cargo install bilicli
+
+# またはソースからビルド
+git clone https://github.com/nekobaimeow/bilicli
+cd bilicli
+cargo build --release
+```
+
+### 📋 依存関係
+
+| ツール | 用途 | インストール |
+|--------|------|-------------|
+| **aria2c** | マルチスレッドダウンロード | `apt install aria2` / `brew install aria2` |
+| **ffmpeg** | 音声/動画の結合 | `apt install ffmpeg` / `brew install ffmpeg` |
+| **python3** | 音声認識（ASR） | `apt install python3`（通常インストール済み） |
+
+```bash
+bilicli doctor   # 環境チェック
+bilicli setup    # ASR モデルと依存関係の自動インストール
+```
+
+### 🎯 主な機能
+
+```bash
+bilicli auth qrcode           # QR コードで Bilibili にログイン
+bilicli download submit <url> # 動画をダウンロード
+bilicli analyze <BV>          # フル分析: ASR + 弾幕 + 字幕 + コメント + OCR
+bilicli ocr input.mp4 --video # オフライン OCR（ハードサブタイトルの抽出）
+bilicli danmaku <BV>          # 弾幕をエクスポート (xml/json/ass)
+bilicli harvest --search <q>  # 検索結果の一括収集
+bilicli repl                  # インタラクティブシェル
+```
+
+### 🗺️ ロードマップ
+
+| 状態 | 機能 |
+|------|------|
+| ✅ 完了 | Bilibili フル対応（DL・弾幕・コメント・字幕・ASR・OCR・REPL） |
+| 🔨 開発中 | YouTube 対応 |
+| 📋 計画中 | TikTok（抖音）、Niconico |
+| 📋 計画中 | クラウド連携: Google Drive、百度網盤、夸克網盤 |
+| 💭 検討中 | クロスプラットフォーム検索、P2P 配信 |
+
+### 🙏 謝辞
+
+本プロジェクトは [btjawa/BiliTools](https://github.com/btjawa/BiliTools) から派生しました。
+原作者の先駆的業績に深く感謝します。bilicli は BiliTools の Rust ビジネスロジックを活用し、
+OCR・ASR・マルチプラットフォーム対応へと拡張しています。
+
+---
+
+## 📄 License
+
+GPL-3.0-or-later — same as upstream [BiliTools](https://github.com/btjawa/BiliTools).
+
+<p align="center">
+  <sub>Built with 🦀 Rust · Powered by open source</sub>
+</p>

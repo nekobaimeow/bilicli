@@ -7,7 +7,7 @@
 
 ## 1. 算法是什么 (一句话)
 
-`bilitools ocr --video --sample-mode adaptive` 跑 `src/ipc/ocr/adaptive.rs::run`。
+`bilicli ocr --video --sample-mode adaptive` 跑 `src/ipc/ocr/adaptive.rs::run`。
 v3 是**二分递归**: 拿 `[lo, hi]` 段的两个端点 OCR, fingerprint 一致就 advance,
 不一致就在 mid 拆开递归, 缓存中间结果, 9-条件决策树在 9db4a8d commit 保留。
 最坏情况 (整段视频内容持续变化) 退化为 1s 抽帧 (n = duration_sec)。

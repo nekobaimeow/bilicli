@@ -236,7 +236,7 @@ mod tests {
 
     async fn fresh() {
         let tmp = std::env::temp_dir().join(format!(
-            "bilitools-cli-tasks-{}",
+            "bilicli-cli-tasks-{}",
             uuid::Uuid::new_v4()
         ));
         db::set_data_dir(Some(tmp.clone())).unwrap();

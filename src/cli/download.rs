@@ -220,7 +220,7 @@ async fn cmd_open(id: &str, _out: &Output) -> Result<(), CliError> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::env::var("HOME")
-                .map(|h| std::path::PathBuf::from(h).join("Downloads/bilitools"))
+                .map(|h| std::path::PathBuf::from(h).join("Downloads/bilicli"))
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
     std::fs::create_dir_all(&out_dir).ok();

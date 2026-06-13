@@ -517,7 +517,7 @@ async fn run_ocr(
         Some(p) => p.to_path_buf(),
         None => return Err(CliError::msg(
             "OCR requires --video-path <local_video.mp4>. \
-             Download the video first with `bilitools download submit <bv>`."
+             Download the video first with `bilicli download submit <bv>`."
         )),
     };
     if !video.is_file() {

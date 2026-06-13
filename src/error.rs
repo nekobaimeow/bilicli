@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// bilitools-cli unified error type.
+// bilicli-cli unified error type.
 // Adapted from BiliTools `src-tauri/src/errors.rs` (TauriError).
 // Differences:
 //   - `TauriError::new` is replaced with a plain constructor.
@@ -40,7 +40,7 @@ pub enum CliError {
     #[error("invalid url: {0}")]
     InvalidUrl(String),
 
-    #[error("dependency missing: {0} — install it or set it in `bilitools config set sidecar.<name>`")]
+    #[error("dependency missing: {0} — install it or set it in `bilicli config set sidecar.<name>`")]
     MissingDependency(String),
 
     #[error("path not found: {0}")]

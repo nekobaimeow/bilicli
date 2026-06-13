@@ -3,7 +3,7 @@
 > **来源：** `https://github.com/btjawa/BiliTools` v1.4.7 (commit `da8693e`)
 > **目标：** 把 5,464 行 Rust 业务代码重新组织为可被 CLI 调用的形态
 > **源路径：** `<WORKSPACE>/BiliTools`
-> **输出路径：** `<WORKSPACE>/bilitools-cli`
+> **输出路径：** `<WORKSPACE>/bilicli-cli`
 
 ---
 
@@ -147,7 +147,7 @@
 
 | GUI 域 | Tauri Command | 业务模块 | CLI 子命令 | 改造点 |
 |---|---|---|---|---|
-| **启动** | `meta`, `init` | `shared`, `login::get_buvid` | `bilitools init`, `bilitools info` | 移除 `app.restart` |
+| **启动** | `meta`, `init` | `shared`, `login::get_buvid` | `bilicli init`, `bilicli info` | 移除 `app.restart` |
 | **登录** | `scan_login`, `refresh_cookie`, `exit`, `stop_login` | `login.rs` | `auth qrcode/refresh/exit` | 改 `Channel<T>` → 简单返回值/轮询 |
 | **解析** | (无) | 隐含在 `submit_task` 内部 | `parse url/fav/watchlater/bangumi` | 把 `frontend::RequestAction` 提到独立函数 |
 | **下载** | `submit_task`, `ctrl_event`, `open_folder` | `queue/{handlers,manager,runtime,task}` | `download submit/list/status/cancel/open` | handlers 改用 `tokio::process` |

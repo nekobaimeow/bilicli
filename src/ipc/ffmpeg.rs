@@ -197,7 +197,7 @@ pub async fn concat_mp4(inputs: &[PathBuf], output: &Path, override_path: Option
     }
     let ffmpeg = resolve(SidecarKind::FFmpeg, override_path)?;
     // Build a temporary concat list file
-    let tmp = std::env::temp_dir().join(format!("bilitools-concat-{}.txt", uuid::Uuid::new_v4()));
+    let tmp = std::env::temp_dir().join(format!("bilicli-concat-{}.txt", uuid::Uuid::new_v4()));
     let mut f = std::fs::File::create(&tmp)?;
     use std::io::Write;
     for p in inputs {

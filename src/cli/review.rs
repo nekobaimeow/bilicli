@@ -27,7 +27,7 @@ pub async fn run(cmd: &Command, out: &Output) -> Result<(), CliError> {
         && !crate::ipc::shared::HEADERS.cookie().await.contains("SESSDATA=")
     {
         out.status(
-            "[warn] not logged in; only first-page hot reviews will be visible. run `bilitools auth qrcode` first.",
+            "[warn] not logged in; only first-page hot reviews will be visible. run `bilicli auth qrcode` first.",
         );
     }
 
