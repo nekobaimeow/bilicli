@@ -128,6 +128,8 @@ proptest = "1"
 [features]
 default = ["ocr"]
 ocr = ["dep:ocr-rs", "dep:imageproc"]
+ocr-source = ["ocr", "ocr-rs/build-mnn-from-source"]
+ocr-static = ["ocr", "ocr-rs/mnn-static"]
 
 [profile.release]
 opt-level = 3
