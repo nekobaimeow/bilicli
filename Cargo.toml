@@ -1,6 +1,6 @@
 [package]
 name = "bilicli"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 description = "A multi-platform video toolkit CLI — download, analyze, transcribe, OCR subtitles. Born from BiliTools, expanding to YouTube, TikTok, and beyond."
 homepage = "https://github.com/nekobaimeow/bilicli"
